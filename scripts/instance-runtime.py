@@ -19,7 +19,7 @@ from functools import partial
 
 from dateutil import parser as date_parser
 
-from ec2_gha.log_constants import (
+from lambda_gha.log_constants import (
     LOG_STREAM_RUNNER_SETUP,
     LOG_STREAM_JOB_STARTED,
     LOG_STREAM_JOB_COMPLETED,

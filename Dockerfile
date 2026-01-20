@@ -5,4 +5,4 @@ RUN mkdir app
 COPY . /app
 RUN pip install --no-cache-dir /app
 
-CMD [ "python", "-m", "ec2_gha" ]
+CMD [ "python", "-m", "lambda_gha" ]

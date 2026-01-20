@@ -23,26 +23,6 @@ wait_for_dpkg_lock() {
   done
 }
 
-# Function to flush CloudWatch logs before shutdown
-flush_cloudwatch_logs() {
-  log "Stopping CloudWatch agent to flush logs"
-  if systemctl is-active --quiet amazon-cloudwatch-agent; then
-    systemctl stop amazon-cloudwatch-agent 2>$dn || /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a stop -m ec2 2>$dn || true
-  fi
-}
-
-# Get EC2 instance metadata (IMDSv2 compatible)
-get_metadata() {
-  local path="$1"
-  local token=$(curl -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 300" http://169.254.169.254/latest/api/token 2>$dn || true)
-  if [ -n "$token" ]; then
-    curl -s -H "X-aws-ec2-metadata-token: $token" "http://169.254.169.254/latest/meta-data/$path" 2>$dn || echo "unknown"
-  else
-    curl -s "http://169.254.169.254/latest/meta-data/$path" 2>$dn || echo "unknown"
-  fi
-  return 0  # Always return success to avoid set -e issues
-}
-
 # Function to deregister all runners
 deregister_all_runners() {
   for RUNNER_DIR in $homedir/runner-*; do
@@ -60,52 +40,53 @@ deregister_all_runners() {
   done
 }
 
+# Terminate Lambda Labs instance via API
+terminate_lambda_instance() {
+  log "Terminating Lambda Labs instance: $LAMBDA_INSTANCE_ID"
+  if [ -z "$LAMBDA_INSTANCE_ID" ] || [ -z "$LAMBDA_API_KEY" ]; then
+    log_error "Missing LAMBDA_INSTANCE_ID or LAMBDA_API_KEY for termination"
+    return 1
+  fi
+
+  local response=$(curl -s -X POST \
+    -H "Authorization: Bearer $LAMBDA_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"instance_ids\": [\"$LAMBDA_INSTANCE_ID\"]}" \
+    "https://cloud.lambdalabs.com/api/v1/instance-operations/terminate")
+
+  log "Termination response: $response"
+}
+
 # Function to handle debug mode sleep and shutdown
 debug_sleep_and_shutdown() {
   # Check if debug is a number (sleep duration in minutes)
   if [[ "$debug" =~ ^[0-9]+$ ]]; then
     local sleep_minutes="$debug"
     local sleep_seconds=$((sleep_minutes * 60))
-    log "Debug: Sleeping ${sleep_minutes} minutes before shutdown..." || true
-    # Detect the SSH user from the home directory
-    local ssh_user=$(basename "$homedir" 2>$dn || echo "ec2-user")
-    local public_ip=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
-    log "SSH into instance with: ssh ${ssh_user}@${public_ip}" || true
-    log "Then check: /var/log/runner-setup.log and /var/log/runner-debug.log" || true
+    log "Debug: Sleeping ${sleep_minutes} minutes before shutdown..."
+    log "SSH into instance: ssh ubuntu@${LAMBDA_INSTANCE_IP:-unknown}"
+    log "Check logs: /var/log/runner-setup.log"
     sleep "$sleep_seconds"
-    log "Debug period ended, shutting down" || true
+    log "Debug period ended, terminating..."
   elif [ "$debug" = "true" ] || [ "$debug" = "True" ] || [ "$debug" = "trace" ]; then
-    # Just tracing enabled, no sleep
-    log "Shutting down immediately (debug tracing enabled but no sleep requested)" || true
+    log "Terminating immediately (debug tracing enabled but no sleep requested)"
   else
-    log "Shutting down immediately (debug mode not enabled)" || true
+    log "Terminating immediately (debug mode not enabled)"
   fi
 
-  # Try multiple shutdown methods as fallbacks (important when disk is full)
-  shutdown -h now 2>/dev/null || {
-    # If shutdown fails, try halt
-    halt -f 2>/dev/null || {
-      # If halt fails, try sysrq if available (Linux only)
-      if [ -w /proc/sysrq-trigger ]; then
-        echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
-        echo o > /proc/sysrq-trigger 2>/dev/null
-      fi
-      # Last resort: force immediate reboot
-      reboot -f 2>/dev/null || true
-    }
-  }
+  # Terminate via Lambda API
+  terminate_lambda_instance
 }
 
 # Function to handle fatal errors and terminate the instance
 terminate_instance() {
   local reason="$1"
-  local instance_id=$(get_metadata "instance-id")
 
   # Log error prominently
   echo "========================================" | tee -a /var/log/runner-setup.log
   log "FATAL ERROR DETECTED"
   log "Reason: $reason"
-  log "Instance: $instance_id"
+  log "Instance: ${LAMBDA_INSTANCE_ID:-unknown}"
   log "Script location: $(pwd)"
   log "User: $(whoami)"
   log "Debug trace available in: /var/log/runner-debug.log"
@@ -116,7 +97,6 @@ terminate_instance() {
     cd "$homedir" && ./config.sh remove --token "${RUNNER_TOKEN}" || true
   fi
 
-  flush_cloudwatch_logs
   debug_sleep_and_shutdown
   exit 1
 }
@@ -153,11 +133,7 @@ configure_runner() {
       set -e
       if [ $deps_result -ne 0 ]; then
         log "Dependencies script failed, installing manually..."
-        if command -v dnf >$dn 2>&1; then
-          sudo dnf install -y libicu lttng-ust >$dn 2>&1 || true
-        elif command -v yum >$dn 2>&1; then
-          sudo yum install -y libicu >$dn 2>&1 || true
-        elif command -v apt-get >$dn 2>&1; then
+        if command -v apt-get >$dn 2>&1; then
           wait_for_dpkg_lock
           sudo apt-get update >$dn 2>&1 || true
           sudo apt-get install -y libicu-dev >$dn 2>&1 || true
@@ -180,7 +156,7 @@ RUNNER_INITIAL_GRACE_PERIOD=$runner_initial_grace_period
 EOF
 
   # Configure runner with GitHub
-  local runner_name="ec2-$instance_id-$idx"
+  local runner_name="lambda-$instance_id-$idx"
   RUNNER_ALLOW_RUNASROOT=1 ./config.sh --url "https://github.com/$repo" --token "$token" --labels "$labels" --name "$runner_name" --disableupdate --unattended 2>&1 | tee /tmp/runner-$idx-config.log
 
   if grep -q "Runner successfully added" /tmp/runner-$idx-config.log; then

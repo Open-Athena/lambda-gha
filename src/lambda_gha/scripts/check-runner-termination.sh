@@ -89,7 +89,6 @@ R=$(grep -l '"status":"running"' $J/*.job 2>/dev/null | wc -l || echo 0)
 if [ $R -eq 0 ] && [ $I -gt $G ]; then
   log "TERMINATING: idle $I > grace $G"
   deregister_all_runners
-  flush_cloudwatch_logs
   debug_sleep_and_shutdown
 else
   [ $R -gt 0 ] && log "$R job(s) running" || log "Idle $I/$G sec"

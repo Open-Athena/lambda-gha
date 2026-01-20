@@ -1,15 +1,9 @@
-name: EC2 Runner
+name: Lambda Runner
 #
 # Environment variables (can be set at org/repo level):
-#   EC2_LAUNCH_ROLE - AWS role ARN for EC2 operations (required if not passed as input)
-#   EC2_INSTANCE_PROFILE - IAM instance profile name for EC2 instances
-#   EC2_IMAGE_ID - Default AMI ID
-#   EC2_INSTANCE_TYPE - Default instance type
-#   EC2_HOME_DIR - Default home directory
-#   EC2_KEY_NAME - Default SSH key pair name
-#   EC2_SECURITY_GROUP_ID - Default security group ID
-#   MAX_INSTANCE_LIFETIME - Default maximum instance lifetime in minutes
-#   SSH_PUBKEY - Default SSH public key to add to instances
+#   LAMBDA_SSH_KEY_NAMES - Comma-separated list of SSH key names registered in Lambda Labs
+#   LAMBDA_INSTANCE_TYPE - Default instance type (e.g., gpu_1x_a10)
+#   LAMBDA_REGION - Default region (e.g., us-south-1)
 #
 # Priority: inputs > vars > defaults
 
@@ -19,174 +13,115 @@ on:
       GH_SA_TOKEN:
         description: "GitHub token with permissions to manage self-hosted runners"
         required: true
+      LAMBDA_API_KEY:
+        description: "Lambda Labs API key"
+        required: true
     inputs:
       action_ref:
-        description: "ec2-gha Git ref (branch/tag/SHA) to checkout"
+        description: "lambda-gha Git ref (branch/tag/SHA) to checkout"
         required: false
         type: string
-        default: "v2"
-      aws_region:
-        description: "AWS region for EC2 instances (falls back to vars.AWS_REGION, then us-east-1)"
-        required: false
-        type: string
-        default: "us-east-1"
-      aws_tags:
-        description: "AWS tags to apply to EC2 instances (JSON array format)"
-        required: false
-        type: string
-      cloudwatch_logs_group:
-        description: "CloudWatch Logs group name for streaming runner logs (leave empty to disable)"
-        required: false
-        type: string
+        default: "main"
       debug:
         description: "Debug mode: false=off, true/trace=set -x only, number=set -x + sleep N minutes before shutdown"
         required: false
         type: string
-        default: false
-      ec2_home_dir:
-        description: "Home directory on the AWS instance (falls back to vars.EC2_HOME_DIR, then auto-detection)"
-        required: false
-        type: string
-      ec2_image_id:
-        description: "AWS AMI ID to use (required - must be provided via input or vars.EC2_IMAGE_ID)"
-        required: false
-        type: string
-      ec2_instance_profile:
-        description: "Instance profile name to attach to launched EC2 instance (required for CloudWatch logging)"
-        required: false
-        type: string
-      ec2_instance_type:
-        description: "AWS instance type (falls back to vars.EC2_INSTANCE_TYPE, then t3.medium)"
-        required: false
-        type: string
-      ec2_key_name:
-        description: "Name of an EC2 key pair to use for SSH access (falls back to vars.EC2_KEY_NAME)"
-        required: false
-        type: string
-      ec2_launch_role:
-        description: "AWS role ARN to assume for EC2 operations (falls back to vars.EC2_LAUNCH_ROLE)"
-        required: false
-        type: string
-      ec2_root_device_size:
-        description: "Root disk size in GB (0=AMI default, +N=AMI+N GB for testing, e.g. +2)"
-        required: false
-        type: string
-        default: "0"
-      ec2_security_group_id:
-        description: "AWS security group ID (falls back to vars.EC2_SECURITY_GROUP_ID)"
-        required: false
-        type: string
-      ec2_userdata:
-        description: "Additional userdata script to run on instance startup (before runner starts)"
+        default: "false"
+      extra_gh_labels:
+        description: "Extra GitHub labels for the runner (comma-separated)"
         required: false
         type: string
       instance_count:
-        description: "Number of EC2 instances to create (for parallel jobs)"
+        description: "Number of instances to create (for parallel jobs)"
         required: false
         type: string
         default: "1"
-      instance_name:
-        description: "Name tag template for EC2 instances. Uses Python string.Template format with variables: $repo, $name (workflow filename stem), $workflow (full workflow name), $ref, $run (number), $idx (0-based instance index for multi-instance launches). Default: $repo/$name#$run (or $repo/$name#$run $idx for multi-instance)"
+      instance_type:
+        description: "Lambda instance type (e.g., gpu_1x_a10, gpu_8x_a100_80gb_sxm4)"
         required: false
         type: string
       max_instance_lifetime:
-        description: "Maximum instance lifetime in minutes before automatic shutdown (falls back to vars.MAX_INSTANCE_LIFETIME, then 360 = 6 hours)"
+        description: "Maximum instance lifetime in minutes before shutdown (default: 360)"
         required: false
         type: string
       name:
         description: "Name for the launch job"
         required: false
         type: string
+      region:
+        description: "Lambda region (e.g., us-south-1, us-west-1)"
+        required: false
+        type: string
       runner_grace_period:
-        description: "Grace period in seconds before terminating instance after last job completes (falls back to vars.RUNNER_GRACE_PERIOD, then 60)"
+        description: "Seconds before terminating after last job completes (default: 60)"
         required: false
         type: string
       runner_initial_grace_period:
-        description: "Grace period in seconds before terminating instance if no jobs start (falls back to vars.RUNNER_INITIAL_GRACE_PERIOD, then 180)"
+        description: "Seconds before terminating if no jobs start (default: 180)"
         required: false
         type: string
       runner_poll_interval:
-        description: "How often (in seconds) to check termination conditions (falls back to vars.RUNNER_POLL_INTERVAL, then 10)"
+        description: "Seconds between termination condition checks (default: 10)"
         required: false
         type: string
       runner_registration_timeout:
-        description: "Maximum seconds to wait for runner to register with GitHub (falls back to vars.RUNNER_REGISTRATION_TIMEOUT, then 360 = 6 minutes)"
+        description: "Max seconds to wait for runner registration (default: 300)"
         required: false
         type: string
-      runners_per_instance:
-        description: "Number of runners to register per instance (each in separate directories to allow concurrent jobs)"
+      ssh_key_names:
+        description: "SSH key names registered in Lambda Labs (comma-separated)"
         required: false
         type: string
-        default: "1"
-      ssh_pubkey:
-        description: "SSH public key to add to authorized_keys (falls back to vars.SSH_PUBKEY)"
+      userdata:
+        description: "Additional script to run before runner setup"
         required: false
         type: string
     outputs:
       id:
-        description: "Instance ID for runs-on (single instance)"
+        description: "Runner label for runs-on (single instance)"
         value: ${{ jobs.launch.outputs.id }}
       mtx:
         description: "JSON array of objects for matrix strategies"
         value: ${{ jobs.launch.outputs.mtx }}
 
-permissions:
-  id-token: write  # Required for AWS OIDC
-
 jobs:
   launch:
-    name: ${{ inputs.name || format('Launch {0}', inputs.ec2_instance_type || vars.EC2_INSTANCE_TYPE) }}
+    name: ${{ inputs.name || format('Launch {0}', inputs.instance_type || vars.LAMBDA_INSTANCE_TYPE || 'gpu_1x_a10') }}
     runs-on: ubuntu-latest
     outputs:
-      id: ${{ steps.aws-start.outputs.label }}
-      mtx: ${{ steps.aws-start.outputs.mtx }}
+      id: ${{ steps.lambda-start.outputs.label }}
+      mtx: ${{ steps.lambda-start.outputs.mtx }}
     steps:
-      - name: Check EC2_LAUNCH_ROLE configuration
+      - name: Check SSH key configuration
         run: |
-          if [ -z "${{ inputs.ec2_launch_role || vars.EC2_LAUNCH_ROLE }}" ]; then
-            echo "ERROR: EC2_LAUNCH_ROLE must be provided either as an input or as a repository/organization variable"
-            echo "Please set 'ec2_launch_role' input or 'EC2_LAUNCH_ROLE' variable"
+          if [ -z "${{ inputs.ssh_key_names || vars.LAMBDA_SSH_KEY_NAMES }}" ]; then
+            echo "ERROR: SSH key names must be provided either as input or as LAMBDA_SSH_KEY_NAMES variable"
             exit 1
           fi
 
-      - name: Checkout ec2-gha repository
+      - name: Checkout lambda-gha repository
         uses: actions/checkout@v4
         with:
-          repository: Open-Athena/ec2-gha
+          repository: Open-Athena/lambda-gha
           ref: ${{ inputs.action_ref }}
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ inputs.ec2_launch_role || vars.EC2_LAUNCH_ROLE }}
-          role-session-name: github-actions-session
-          aws-region: ${{ inputs.aws_region }}
-
-      - name: Create cloud runner
-        id: aws-start
+      - name: Create Lambda runner
+        id: lambda-start
         uses: ./
         with:
           action_ref: ${{ inputs.action_ref }}
-          aws_region: ${{ inputs.aws_region || vars.AWS_REGION }}
-          aws_tags: ${{ inputs.aws_tags }}
-          cloudwatch_logs_group: ${{ inputs.cloudwatch_logs_group || vars.CLOUDWATCH_LOGS_GROUP }}
           debug: ${{ inputs.debug }}
-          ec2_home_dir: ${{ inputs.ec2_home_dir || vars.EC2_HOME_DIR }}
-          ec2_image_id: ${{ inputs.ec2_image_id || vars.EC2_IMAGE_ID }}
-          ec2_instance_profile: ${{ inputs.ec2_instance_profile || vars.EC2_INSTANCE_PROFILE }}
-          ec2_instance_type: ${{ inputs.ec2_instance_type || vars.EC2_INSTANCE_TYPE }}
-          ec2_key_name: ${{ inputs.ec2_key_name || vars.EC2_KEY_NAME }}
-          ec2_root_device_size: ${{ inputs.ec2_root_device_size }}
-          ec2_security_group_id: ${{ inputs.ec2_security_group_id || vars.EC2_SECURITY_GROUP_ID }}
-          ec2_userdata: ${{ inputs.ec2_userdata }}
+          extra_gh_labels: ${{ inputs.extra_gh_labels }}
           instance_count: ${{ inputs.instance_count }}
-          instance_name: ${{ inputs.instance_name }}
+          instance_type: ${{ inputs.instance_type || vars.LAMBDA_INSTANCE_TYPE }}
           max_instance_lifetime: ${{ inputs.max_instance_lifetime || vars.MAX_INSTANCE_LIFETIME }}
+          region: ${{ inputs.region || vars.LAMBDA_REGION }}
           runner_grace_period: ${{ inputs.runner_grace_period || vars.RUNNER_GRACE_PERIOD }}
           runner_initial_grace_period: ${{ inputs.runner_initial_grace_period || vars.RUNNER_INITIAL_GRACE_PERIOD }}
           runner_poll_interval: ${{ inputs.runner_poll_interval || vars.RUNNER_POLL_INTERVAL }}
           runner_registration_timeout: ${{ inputs.runner_registration_timeout || vars.RUNNER_REGISTRATION_TIMEOUT }}
-          runners_per_instance: ${{ inputs.runners_per_instance }}
-          ssh_pubkey: ${{ inputs.ssh_pubkey || vars.SSH_PUBKEY }}
+          ssh_key_names: ${{ inputs.ssh_key_names || vars.LAMBDA_SSH_KEY_NAMES }}
+          userdata: ${{ inputs.userdata }}
         env:
           GH_PAT: ${{ secrets.GH_SA_TOKEN }}
+          LAMBDA_API_KEY: ${{ secrets.LAMBDA_API_KEY }}

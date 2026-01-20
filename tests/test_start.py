@@ -4,8 +4,8 @@ import pytest
 from botocore.exceptions import WaiterError, ClientError
 from moto import mock_aws
 
-from ec2_gha.start import StartAWS
-from ec2_gha.defaults import AUTO
+from lambda_gha.start import StartAWS
+from lambda_gha.defaults import AUTO
 
 
 @pytest.fixture(scope="function")
@@ -46,7 +46,7 @@ def aws(base_aws_params, monkeypatch):
             else:
                 raise ValueError(f"Unexpected subprocess call: {cmd}")
 
-        with patch("ec2_gha.start.subprocess.run", side_effect=mock_subprocess_run):
+        with patch("lambda_gha.start.subprocess.run", side_effect=mock_subprocess_run):
             yield StartAWS(**base_aws_params)
 
 
@@ -201,7 +201,7 @@ def test_auto_home_dir(complete_params, monkeypatch):
 
     with (
         patch("boto3.client") as mock_client,
-        patch("ec2_gha.start.subprocess.run", side_effect=mock_subprocess_run)
+        patch("lambda_gha.start.subprocess.run", side_effect=mock_subprocess_run)
     ):
         mock_ec2 = Mock()
         mock_client.return_value = mock_ec2
@@ -432,7 +432,7 @@ def test_create_instances_sets_auto_home_dir(base_aws_params, monkeypatch):
         aws.runner_release = "https://example.com/runner.tar.gz"
 
         with patch("boto3.client") as mock_client, \
-             patch("ec2_gha.start.subprocess.run", side_effect=mock_subprocess_run):
+             patch("lambda_gha.start.subprocess.run", side_effect=mock_subprocess_run):
             mock_ec2 = Mock()
             mock_client.return_value = mock_ec2
 

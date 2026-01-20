@@ -52,7 +52,7 @@ mkdir -p $RUNNER_STATE_DIR
 
 # Fetch shared functions from GitHub
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Fetching shared functions from GitHub (SHA: ${action_sha})" | tee -a /var/log/runner-setup.log
-FUNCTIONS_URL="https://raw.githubusercontent.com/Open-Athena/ec2-gha/${action_sha}/src/ec2_gha/templates/shared-functions.sh"
+FUNCTIONS_URL="https://raw.githubusercontent.com/Open-Athena/lambda-gha/${action_sha}/src/lambda_gha/templates/shared-functions.sh"
 if ! curl -sSL "$FUNCTIONS_URL" -o /tmp/shared-functions.sh && ! wget -q "$FUNCTIONS_URL" -O /tmp/shared-functions.sh; then
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to download shared functions" | tee -a /var/log/runner-setup.log
   shutdown -h now
@@ -270,7 +270,7 @@ fetch_script() {
 # Fetch job tracking scripts from GitHub
 # These scripts are called by GitHub runner hooks
 log "Fetching runner hook scripts"
-BASE_URL="https://raw.githubusercontent.com/Open-Athena/ec2-gha/${action_sha}/src/ec2_gha/scripts"
+BASE_URL="https://raw.githubusercontent.com/Open-Athena/lambda-gha/${action_sha}/src/lambda_gha/scripts"
 
 fetch_script "job-started-hook.sh"
 fetch_script "job-completed-hook.sh"
