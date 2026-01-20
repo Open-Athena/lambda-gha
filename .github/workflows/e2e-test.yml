@@ -1,0 +1,42 @@
+name: E2E Test
+on:
+  workflow_dispatch:
+
+jobs:
+  # Launch Lambda instance and register runner
+  lambda:
+    uses: ./.github/workflows/runner.yml
+    secrets: inherit
+    with:
+      instance_type: gpu_1x_a10
+      region: us-east-1
+      runner_grace_period: "30"
+      runner_initial_grace_period: "120"
+      debug: "true"
+
+  # Run test job on the Lambda runner
+  gpu-test:
+    needs: lambda
+    runs-on: ${{ needs.lambda.outputs.id }}
+    steps:
+      - name: System info
+        run: |
+          echo "=== System Info ==="
+          echo "Hostname: $(hostname)"
+          echo "OS: $(cat /etc/os-release | grep PRETTY_NAME)"
+          echo "Kernel: $(uname -r)"
+          echo "User: $(whoami)"
+
+      - name: GPU info
+        run: |
+          echo "=== GPU Info ==="
+          nvidia-smi
+
+      - name: CUDA check
+        run: |
+          echo "=== CUDA Version ==="
+          nvcc --version || echo "nvcc not in PATH"
+          cat /usr/local/cuda/version.txt 2>/dev/null || echo "CUDA version file not found"
+
+      - name: Success
+        run: echo "E2E test completed successfully on Lambda Labs GPU instance!"
