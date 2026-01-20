@@ -15,7 +15,7 @@ jobs:
     secrets: inherit
     with:
       instance_type: gpu_1x_a10
-      region: us-south-1
+
   gpu-test:
     needs: lambda
     runs-on: ${{ needs.lambda.outputs.id }}
@@ -41,6 +41,13 @@ Create a GitHub Personal Access Token with `repo` scope and admin access, and ad
 gh secret set GH_SA_TOKEN --body "your_personal_access_token_here"
 ```
 
+#### `LAMBDA_SSH_PRIVATE_KEY`
+The private key corresponding to one of your Lambda Labs SSH keys. Used to connect to instances during setup:
+
+```bash
+gh secret set LAMBDA_SSH_PRIVATE_KEY < ~/.ssh/my-lambda-key
+```
+
 ### Required Variables
 
 #### `LAMBDA_SSH_KEY_NAMES`
@@ -55,7 +62,7 @@ gh variable set LAMBDA_SSH_KEY_NAMES --body "my-ssh-key"
 | Input | Description | Default |
 |-------|-------------|---------|
 | `instance_type` | Lambda instance type (e.g., `gpu_1x_a10`, `gpu_8x_a100_80gb_sxm4`) | `gpu_1x_a10` |
-| `region` | Lambda region (e.g., `us-south-1`, `us-west-1`) | `us-south-1` |
+| `region` | Lambda region (e.g., `us-east-1`, `us-west-1`); omit to auto-select | |
 | `instance_count` | Number of instances for parallel jobs | `1` |
 | `debug` | Debug mode: `false`=off, `true`=tracing, number=sleep N minutes before shutdown | `false` |
 | `extra_gh_labels` | Extra GitHub labels for the runner (comma-separated) | |
