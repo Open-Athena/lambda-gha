@@ -28,16 +28,22 @@ BIN_DIR=/usr/local/bin
 RUNNER_STATE_DIR=/var/run/github-runner
 mkdir -p $RUNNER_STATE_DIR
 
-# Fetch shared functions from GitHub
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Fetching shared functions from GitHub (SHA: ${action_sha})" | tee -a /var/log/runner-setup.log
-FUNCTIONS_URL="https://raw.githubusercontent.com/Open-Athena/lambda-gha/${action_sha}/src/lambda_gha/templates/shared-functions.sh"
-if ! curl -sSL "$FUNCTIONS_URL" -o /tmp/shared-functions.sh && ! wget -q "$FUNCTIONS_URL" -O /tmp/shared-functions.sh; then
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to download shared functions" | tee -a /var/log/runner-setup.log
-  # Terminate via Lambda API
-  curl -s -X POST -H "Authorization: Bearer $LAMBDA_API_KEY" -H "Content-Type: application/json" \
-    -d "{\"instance_ids\": [\"$LAMBDA_INSTANCE_ID\"]}" \
-    "$LAMBDA_API_BASE/instance-operations/terminate" || true
-  exit 1
+# Get shared functions - from local dir if available (private repo), else fetch from GitHub
+SCRIPTS_DIR="${SCRIPTS_DIR:-}"
+if [ -n "$SCRIPTS_DIR" ] && [ -f "$SCRIPTS_DIR/shared-functions.sh" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Using local shared functions from $SCRIPTS_DIR" | tee -a /var/log/runner-setup.log
+  cp "$SCRIPTS_DIR/shared-functions.sh" /tmp/shared-functions.sh
+else
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Fetching shared functions from GitHub (SHA: ${action_sha})" | tee -a /var/log/runner-setup.log
+  FUNCTIONS_URL="https://raw.githubusercontent.com/Open-Athena/lambda-gha/${action_sha}/src/lambda_gha/templates/shared-functions.sh"
+  if ! curl -sSL "$FUNCTIONS_URL" -o /tmp/shared-functions.sh && ! wget -q "$FUNCTIONS_URL" -O /tmp/shared-functions.sh; then
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to download shared functions" | tee -a /var/log/runner-setup.log
+    # Terminate via Lambda API
+    curl -s -X POST -H "Authorization: Bearer $LAMBDA_API_KEY" -H "Content-Type: application/json" \
+      -d "{\"instance_ids\": [\"$LAMBDA_INSTANCE_ID\"]}" \
+      "$LAMBDA_API_BASE/instance-operations/terminate" || true
+    exit 1
+  fi
 fi
 
 # Write shared functions that will be used by multiple scripts
@@ -134,12 +140,19 @@ else
 fi
 log "Downloaded runner binary"
 
-# Helper function to fetch scripts
+# Helper function to fetch scripts - uses local copy if available, else downloads
 fetch_script() {
   local script_name="$1"
-  local url="${BASE_URL}/${script_name}"
   local dest="${BIN_DIR}/${script_name}"
 
+  # Check for local copy first (private repo support)
+  if [ -n "$SCRIPTS_DIR" ] && [ -f "$SCRIPTS_DIR/$script_name" ]; then
+    cp "$SCRIPTS_DIR/$script_name" "$dest"
+    return 0
+  fi
+
+  # Fall back to downloading from GitHub
+  local url="${BASE_URL}/${script_name}"
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$url" -o "$dest" || {
       log_error "Failed to fetch $script_name"
@@ -156,9 +169,12 @@ fetch_script() {
   fi
 }
 
-# Fetch job tracking scripts from GitHub
-# These scripts are called by GitHub runner hooks
-log "Fetching runner hook scripts"
+# Fetch job tracking scripts - from local if available (private repo), else GitHub
+if [ -n "$SCRIPTS_DIR" ]; then
+  log "Copying runner hook scripts from local $SCRIPTS_DIR"
+else
+  log "Fetching runner hook scripts from GitHub"
+fi
 BASE_URL="https://raw.githubusercontent.com/Open-Athena/lambda-gha/${action_sha}/src/lambda_gha/scripts"
 
 fetch_script "job-started-hook.sh"

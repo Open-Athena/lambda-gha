@@ -268,8 +268,10 @@ class StartLambdaLabs:
         start_time = time.time()
         pending = set(ids)
         details = {}
+        last_log_time = {}  # Track last log time per instance to reduce spam
 
         while pending and (time.time() - start_time) < timeout:
+            elapsed = int(time.time() - start_time)
             for instance_id in list(pending):
                 try:
                     result = self._api_request("GET", f"/instances/{instance_id}")
@@ -283,14 +285,21 @@ class StartLambdaLabs:
                             "status": status,
                         }
                         pending.remove(instance_id)
-                        print(f"Instance {instance_id} is ready: {instance.get('ip')}")
+                        print(f"[{elapsed}s] Instance {instance_id[:12]}... is ready: {instance.get('ip')}")
                     elif status in ("terminated", "terminating"):
                         raise RuntimeError(f"Instance {instance_id} terminated unexpectedly")
                     else:
-                        print(f"Instance {instance_id} status: {status}")
+                        # Log every 30s to reduce spam, but always log first status
+                        last_log = last_log_time.get(instance_id, 0)
+                        if elapsed - last_log >= 30 or last_log == 0:
+                            print(f"[{elapsed}s] Instance {instance_id[:12]}... status: {status}")
+                            last_log_time[instance_id] = elapsed
                 except requests.HTTPError as e:
                     if e.response.status_code == 404:
-                        print(f"Instance {instance_id} not found yet, retrying...")
+                        last_log = last_log_time.get(instance_id, 0)
+                        if elapsed - last_log >= 30 or last_log == 0:
+                            print(f"[{elapsed}s] Instance {instance_id[:12]}... not found yet, retrying...")
+                            last_log_time[instance_id] = elapsed
                     else:
                         raise
 
@@ -298,7 +307,8 @@ class StartLambdaLabs:
                 time.sleep(INSTANCE_POLL_INTERVAL)
 
         if pending:
-            raise TimeoutError(f"Instances did not become ready within {timeout}s: {pending}")
+            elapsed = int(time.time() - start_time)
+            raise TimeoutError(f"[{elapsed}s] Instances did not become ready within {timeout}s: {pending}")
 
         return details
 
@@ -399,39 +409,62 @@ class StartLambdaLabs:
             else:
                 raise RuntimeError(f"Failed to connect to {ip} via SSH after {max_retries} attempts")
 
-        # Read setup script from package (can't curl from private repo)
+        # Read all required scripts from package (can't curl from private repo)
         from importlib.resources import files
         scripts_dir = files("lambda_gha.scripts")
-        setup_script = (scripts_dir / "runner-setup.sh").read_text()
+        templates_dir = files("lambda_gha.templates")
 
-        # Write script to temp file for SCP
-        script_file = tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False)
-        script_file.write(setup_script)
-        script_file.close()
-        os.chmod(script_file.name, stat.S_IRUSR | stat.S_IXUSR)  # 0500
+        # Scripts to copy: (source, dest_name)
+        scripts_to_copy = [
+            (scripts_dir / "runner-setup.sh", "runner-setup.sh"),
+            (scripts_dir / "check-runner-termination.sh", "check-runner-termination.sh"),
+            (scripts_dir / "job-started-hook.sh", "job-started-hook.sh"),
+            (scripts_dir / "job-completed-hook.sh", "job-completed-hook.sh"),
+            (templates_dir / "shared-functions.sh", "shared-functions.sh"),
+        ]
 
-        # SCP the script to the instance
+        # SCP options
         scp_opts = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
         if key_file:
             scp_opts.extend(["-i", key_file.name])
 
-        print(f"Copying setup script to instance...")
-        scp_result = subprocess.run(
-            ["scp"] + scp_opts + [script_file.name, f"{ssh_user}@{ip}:/tmp/runner-setup.sh"],
+        # Create scripts directory on instance
+        print(f"Creating scripts directory on instance...")
+        mkdir_result = subprocess.run(
+            ["ssh"] + ssh_opts + [f"{ssh_user}@{ip}", "mkdir -p /tmp/lambda-gha-scripts"],
             capture_output=True,
             text=True,
         )
-        if scp_result.returncode != 0:
-            raise RuntimeError(f"Failed to SCP script: {scp_result.stderr}")
+        if mkdir_result.returncode != 0:
+            raise RuntimeError(f"Failed to create scripts dir: {mkdir_result.stderr}")
 
-        # Build env export commands
+        # Copy all scripts
+        print(f"Copying {len(scripts_to_copy)} scripts to instance...")
+        for src_file, dest_name in scripts_to_copy:
+            content = src_file.read_text()
+            local_file = tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False)
+            local_file.write(content)
+            local_file.close()
+            os.chmod(local_file.name, stat.S_IRUSR | stat.S_IXUSR)
+
+            scp_result = subprocess.run(
+                ["scp"] + scp_opts + [local_file.name, f"{ssh_user}@{ip}:/tmp/lambda-gha-scripts/{dest_name}"],
+                capture_output=True,
+                text=True,
+            )
+            os.unlink(local_file.name)
+            if scp_result.returncode != 0:
+                raise RuntimeError(f"Failed to SCP {dest_name}: {scp_result.stderr}")
+
+        # Build env export commands (add SCRIPTS_DIR for local script access)
+        env_vars["SCRIPTS_DIR"] = "/tmp/lambda-gha-scripts"
         env_exports = "\n".join(f'export {k}="{v}"' for k, v in env_vars.items())
 
-        # Build the setup command: export vars, run script
+        # Build the setup command: export vars, run script from scripts dir
         setup_cmd = f'''
 {env_exports}
-chmod +x /tmp/runner-setup.sh
-sudo -E nohup /tmp/runner-setup.sh > /var/log/runner-setup.log 2>&1 &
+chmod +x /tmp/lambda-gha-scripts/*.sh
+sudo -E nohup /tmp/lambda-gha-scripts/runner-setup.sh > /var/log/runner-setup.log 2>&1 &
 '''
 
         print(f"Executing setup script...")
