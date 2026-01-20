@@ -26,10 +26,9 @@ on:
         type: string
         default: "main"
       check_availability:
-        description: "Pre-check capacity before attempting launches (default: true)"
+        description: "Pre-check capacity before attempting launches (default: auto, enabled when multiple types/regions)"
         required: false
         type: string
-        default: "true"
       debug:
         description: "Debug mode: false=off, true/trace=set -x only, number=set -x + sleep N minutes before shutdown"
         required: false

@@ -94,9 +94,15 @@ def main():
     retry_delay_str = params.pop("retry_delay", None)
     params["retry_delay"] = float(retry_delay_str) if retry_delay_str else DEFAULT_RETRY_DELAY
 
-    # Parse check_availability (defaults to True)
-    check_avail_str = params.pop("check_availability", None) or "true"
-    params["check_availability"] = check_avail_str.lower() not in ("false", "0", "no")
+    # Parse check_availability
+    # Default: true if multiple instance types or regions (fallback scenario)
+    check_avail_str = params.pop("check_availability", None)
+    if check_avail_str:
+        params["check_availability"] = check_avail_str.lower() not in ("false", "0", "no")
+    else:
+        # Auto-enable if there are multiple options to choose from
+        has_fallback = len(params["instance_types"]) > 1 or len(params["regions"]) > 1
+        params["check_availability"] = has_fallback
 
     # Parse SSH key names (comma-separated)
     ssh_key_names_str = params.pop("ssh_key_names", None)

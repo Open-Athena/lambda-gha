@@ -19,9 +19,8 @@ inputs:
     required: false
     default: "1"
   check_availability:
-    description: "Pre-check capacity before attempting launches (default: true)"
+    description: "Pre-check capacity before attempting launches (default: auto, enabled when multiple types/regions)"
     required: false
-    default: "true"
   instance_type:
     description: "Lambda instance type(s), comma-separated for fallback (e.g., gpu_1x_a10,gpu_1x_a100)"
     required: false
