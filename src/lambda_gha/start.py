@@ -399,21 +399,42 @@ class StartLambdaLabs:
             else:
                 raise RuntimeError(f"Failed to connect to {ip} via SSH after {max_retries} attempts")
 
+        # Read setup script from package (can't curl from private repo)
+        from importlib.resources import files
+        scripts_dir = files("lambda_gha.scripts")
+        setup_script = (scripts_dir / "runner-setup.sh").read_text()
+
+        # Write script to temp file for SCP
+        script_file = tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False)
+        script_file.write(setup_script)
+        script_file.close()
+        os.chmod(script_file.name, stat.S_IRUSR | stat.S_IXUSR)  # 0500
+
+        # SCP the script to the instance
+        scp_opts = ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+        if key_file:
+            scp_opts.extend(["-i", key_file.name])
+
+        print(f"Copying setup script to instance...")
+        scp_result = subprocess.run(
+            ["scp"] + scp_opts + [script_file.name, f"{ssh_user}@{ip}:/tmp/runner-setup.sh"],
+            capture_output=True,
+            text=True,
+        )
+        if scp_result.returncode != 0:
+            raise RuntimeError(f"Failed to SCP script: {scp_result.stderr}")
+
         # Build env export commands
         env_exports = "\n".join(f'export {k}="{v}"' for k, v in env_vars.items())
 
-        # Script URL from GitHub
-        script_url = f"https://raw.githubusercontent.com/Open-Athena/lambda-gha/{action_sha}/src/lambda_gha/scripts/runner-setup.sh"
-
-        # Build the setup command: export vars, fetch script, run it
+        # Build the setup command: export vars, run script
         setup_cmd = f'''
 {env_exports}
-curl -sSL "{script_url}" -o /tmp/runner-setup.sh
 chmod +x /tmp/runner-setup.sh
 sudo -E nohup /tmp/runner-setup.sh > /var/log/runner-setup.log 2>&1 &
 '''
 
-        print(f"Executing setup script from {script_url}...")
+        print(f"Executing setup script...")
         exec_result = subprocess.run(
             ["ssh"] + ssh_opts + [f"{ssh_user}@{ip}", setup_cmd],
             capture_output=True,
