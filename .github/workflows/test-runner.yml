@@ -1,0 +1,22 @@
+name: Test Runner
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: [self-hosted, gpu, a10, test]
+    steps:
+      - name: System info
+        run: |
+          echo "Hostname: $(hostname)"
+          echo "OS: $(cat /etc/os-release | grep PRETTY_NAME)"
+          echo "Kernel: $(uname -r)"
+
+      - name: GPU info
+        run: nvidia-smi
+
+      - name: Check environment
+        run: |
+          echo "User: $(whoami)"
+          echo "Home: $HOME"
+          echo "PWD: $(pwd)"
