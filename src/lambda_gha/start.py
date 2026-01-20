@@ -456,15 +456,26 @@ class StartLambdaLabs:
             if scp_result.returncode != 0:
                 raise RuntimeError(f"Failed to SCP {dest_name}: {scp_result.stderr}")
 
-        # Build env export commands (add SCRIPTS_DIR for local script access)
+        # Add SCRIPTS_DIR for local script access
         env_vars["SCRIPTS_DIR"] = "/tmp/lambda-gha-scripts"
-        env_exports = "\n".join(f'export {k}="{v}"' for k, v in env_vars.items())
 
-        # Build the setup command: export vars, run script from scripts dir
-        setup_cmd = f'''
-{env_exports}
+        # Write env vars to a file on the instance (more reliable than sudo -E)
+        env_file_content = "\n".join(f'export {k}="{v}"' for k, v in env_vars.items())
+        write_env_cmd = f"cat > /tmp/lambda-gha-scripts/env.sh << 'ENVEOF'\n{env_file_content}\nENVOF"
+
+        print(f"Writing environment file to instance...")
+        env_result = subprocess.run(
+            ["ssh"] + ssh_opts + [f"{ssh_user}@{ip}", write_env_cmd],
+            capture_output=True,
+            text=True,
+        )
+        if env_result.returncode != 0:
+            raise RuntimeError(f"Failed to write env file: {env_result.stderr}")
+
+        # Build the setup command: source env file, then run script
+        setup_cmd = '''
 chmod +x /tmp/lambda-gha-scripts/*.sh
-sudo -E nohup /tmp/lambda-gha-scripts/runner-setup.sh > /var/log/runner-setup.log 2>&1 &
+sudo bash -c 'source /tmp/lambda-gha-scripts/env.sh && nohup /tmp/lambda-gha-scripts/runner-setup.sh > /var/log/runner-setup.log 2>&1 &'
 '''
 
         print(f"Executing setup script...")
