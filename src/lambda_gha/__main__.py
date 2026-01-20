@@ -1,7 +1,24 @@
 from os import environ
 
+import requests
 from gha_runner.gh import GitHubInstance
 from gha_runner.helper.input import EnvVarBuilder, check_required
+
+
+def get_runner_release(platform: str = "linux", architecture: str = "x64") -> str:
+    """Fetch latest GitHub Actions runner release URL.
+
+    Uses unauthenticated request since fine-grained PATs can't access
+    repos they weren't explicitly granted access to (even public ones).
+    """
+    resp = requests.get("https://api.github.com/repos/actions/runner/releases/latest")
+    resp.raise_for_status()
+    release_data = resp.json()
+    suffix = f"-{platform}-{architecture}-"
+    for asset in release_data.get("assets", []):
+        if suffix in asset["name"] and asset["name"].endswith(".tar.gz"):
+            return asset["browser_download_url"]
+    raise RuntimeError(f"Could not find {platform}-{architecture} runner release")
 
 from lambda_gha.defaults import (
     DEFAULT_INSTANCE_TYPE,
@@ -26,11 +43,6 @@ def main():
 
     token = environ["GH_PAT"]
     api_key = environ["LAMBDA_API_KEY"]
-
-    # Debug token info (without revealing the actual token)
-    print(f"GH_PAT length: {len(token)}")
-    print(f"GH_PAT prefix: {token[:4]}..." if len(token) > 4 else f"GH_PAT too short: {len(token)}")
-    print(f"GH_PAT has newline: {chr(10) in token or chr(13) in token}")
 
     builder = (
         EnvVarBuilder(env)
@@ -78,7 +90,7 @@ def main():
     gh = GitHubInstance(token=token, repo=repo)
 
     # Get runner release (Lambda instances are Linux x64)
-    runner_release = gh.get_latest_runner_release(platform="linux", architecture="x64")
+    runner_release = get_runner_release(platform="linux", architecture="x64")
     params["runner_release"] = runner_release
 
     # Generate runner tokens
