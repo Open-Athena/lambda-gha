@@ -48,6 +48,9 @@ inputs:
   ssh_key_names:
     description: "SSH key names registered in Lambda Labs (comma-separated)"
     required: false
+  ssh_private_key:
+    description: "SSH private key for connecting to Lambda instances"
+    required: false
   userdata:
     description: "Additional script to run before runner setup"
     required: false

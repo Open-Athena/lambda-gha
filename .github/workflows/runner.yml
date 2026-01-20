@@ -16,6 +16,9 @@ on:
       LAMBDA_API_KEY:
         description: "Lambda Labs API key"
         required: true
+      LAMBDA_SSH_PRIVATE_KEY:
+        description: "SSH private key for connecting to Lambda instances"
+        required: true
     inputs:
       action_ref:
         description: "lambda-gha Git ref (branch/tag/SHA) to checkout"
@@ -121,6 +124,7 @@ jobs:
           runner_poll_interval: ${{ inputs.runner_poll_interval || vars.RUNNER_POLL_INTERVAL }}
           runner_registration_timeout: ${{ inputs.runner_registration_timeout || vars.RUNNER_REGISTRATION_TIMEOUT }}
           ssh_key_names: ${{ inputs.ssh_key_names || vars.LAMBDA_SSH_KEY_NAMES }}
+          ssh_private_key: ${{ secrets.LAMBDA_SSH_PRIVATE_KEY }}
           userdata: ${{ inputs.userdata }}
         env:
           GH_PAT: ${{ secrets.GH_SA_TOKEN }}

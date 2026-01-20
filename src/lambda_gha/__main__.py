@@ -56,6 +56,7 @@ def main():
         .update_state("INPUT_RUNNER_INITIAL_GRACE_PERIOD", "runner_initial_grace_period")
         .update_state("INPUT_RUNNER_POLL_INTERVAL", "runner_poll_interval")
         .update_state("INPUT_SSH_KEY_NAMES", "ssh_key_names")
+        .update_state("INPUT_SSH_PRIVATE_KEY", "ssh_private_key")
         .update_state("INPUT_USERDATA", "userdata")
         .update_state("GITHUB_REPOSITORY", "repo")
         .update_state("INPUT_REPO", "repo")

@@ -93,6 +93,7 @@ class StartLambdaLabs:
     runner_initial_grace_period: str = "180"
     runner_poll_interval: str = "10"
     runner_release: str = ""
+    ssh_private_key: str = ""
     userdata: str = ""
 
     def _api_request(
@@ -106,7 +107,14 @@ class StartLambdaLabs:
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         resp = requests.request(method, url, headers=headers, json=json_data)
-        resp.raise_for_status()
+        if not resp.ok:
+            # Log the actual error body before raising
+            try:
+                error_body = resp.json()
+                print(f"Lambda API error: {error_body}")
+            except Exception:
+                print(f"Lambda API error (raw): {resp.text}")
+            resp.raise_for_status()
         return resp.json()
 
     def _get_template_vars(self, idx: int = None) -> dict:
@@ -341,7 +349,22 @@ class StartLambdaLabs:
         retry_delay : int
             Seconds between retry attempts.
         """
+        import os
+        import stat
+        import tempfile
+
         print(f"Connecting to {ssh_user}@{ip} to execute setup...")
+
+        # Write SSH private key to temporary file if provided
+        key_file = None
+        if self.ssh_private_key:
+            key_file = tempfile.NamedTemporaryFile(mode='w', suffix='_key', delete=False)
+            key_file.write(self.ssh_private_key)
+            if not self.ssh_private_key.endswith('\n'):
+                key_file.write('\n')
+            key_file.close()
+            os.chmod(key_file.name, stat.S_IRUSR)  # 0400
+            print(f"Using SSH key from secret")
 
         # SSH options for non-interactive, key-based auth
         ssh_opts = [
@@ -350,6 +373,8 @@ class StartLambdaLabs:
             "-o", "ConnectTimeout=10",
             "-o", "BatchMode=yes",
         ]
+        if key_file:
+            ssh_opts.extend(["-i", key_file.name])
 
         # Wait for SSH to be available
         for attempt in range(1, max_retries + 1):
