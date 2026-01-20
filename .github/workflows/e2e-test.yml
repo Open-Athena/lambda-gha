@@ -8,8 +8,8 @@ jobs:
     uses: ./.github/workflows/runner.yml
     secrets: inherit
     with:
-      instance_type: gpu_1x_a10
-      region: us-east-1
+      instance_type: gpu_1x_a100_sxm4
+      region: us-west-2
       runner_grace_period: "30"
       runner_initial_grace_period: "120"
       debug: "true"
