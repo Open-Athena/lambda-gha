@@ -28,7 +28,7 @@ jobs:
 ### Required Secrets
 
 #### `LAMBDA_API_KEY`
-Get your API key from [Lambda Labs Cloud Dashboard](https://cloud.lambdalabs.com/api-keys) and add it as a repository secret:
+Get your API key from [Lambda Labs Cloud Dashboard](https://cloud.lambda.ai/api-keys) and add it as a repository secret:
 
 ```bash
 gh secret set LAMBDA_API_KEY --body "your_api_key_here"
@@ -44,7 +44,7 @@ gh secret set GH_SA_TOKEN --body "your_personal_access_token_here"
 ### Required Variables
 
 #### `LAMBDA_SSH_KEY_NAMES`
-Register an SSH key in your [Lambda Labs account](https://cloud.lambdalabs.com/ssh-keys), then set the key name(s):
+Register an SSH key in your [Lambda Labs account](https://cloud.lambda.ai/ssh-keys), then set the key name(s):
 
 ```bash
 gh variable set LAMBDA_SSH_KEY_NAMES --body "my-ssh-key"

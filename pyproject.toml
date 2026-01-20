@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Start a Lambda Labs GPU GitHub Actions Runner"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["requests", "gha_runner @ git+https://github.com/Open-Athena/gha-runner.git@v1"]
+dependencies = ["click", "requests", "gha_runner @ git+https://github.com/Open-Athena/gha-runner.git@v1"]
+
+[project.scripts]
+lmbda = "lambda_gha.cli:cli"
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-cov", "responses", "ruff", "syrupy"]

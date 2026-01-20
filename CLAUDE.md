@@ -83,14 +83,14 @@ lambda-gha/
 
 ### Authentication
 ```bash
-curl -u $LAMBDA_API_KEY: https://cloud.lambdalabs.com/api/v1/instances
+curl -u $LAMBDA_API_KEY: https://cloud.lambda.ai/api/v1/instances
 # or
 curl -H "Authorization: Bearer $LAMBDA_API_KEY" ...
 ```
 
 ### Launch Instance
 ```bash
-POST https://cloud.lambdalabs.com/api/v1/instance-operations/launch
+POST https://cloud.lambda.ai/api/v1/instance-operations/launch
 {
   "instance_type_name": "gpu_1x_a10",
   "region_name": "us-south-1",
@@ -101,7 +101,7 @@ POST https://cloud.lambdalabs.com/api/v1/instance-operations/launch
 
 ### Terminate Instance
 ```bash
-POST https://cloud.lambdalabs.com/api/v1/instance-operations/terminate
+POST https://cloud.lambda.ai/api/v1/instance-operations/terminate
 {
   "instance_ids": ["<instance-id>"]
 }
@@ -109,12 +109,12 @@ POST https://cloud.lambdalabs.com/api/v1/instance-operations/terminate
 
 ### Get Instance
 ```bash
-GET https://cloud.lambdalabs.com/api/v1/instances/{id}
+GET https://cloud.lambda.ai/api/v1/instances/{id}
 ```
 
 ### List Instance Types
 ```bash
-GET https://cloud.lambdalabs.com/api/v1/instance-types
+GET https://cloud.lambda.ai/api/v1/instance-types
 ```
 
 ## Key Differences from ec2-gha

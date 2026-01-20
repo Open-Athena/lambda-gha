@@ -1,7 +1,7 @@
 """Default values for lambda-gha configuration."""
 
 # Lambda Labs API
-LAMBDA_API_BASE = "https://cloud.lambdalabs.com/api/v1"
+LAMBDA_API_BASE = "https://cloud.lambda.ai/api/v1"
 
 # Instance lifetime and timing defaults
 MAX_INSTANCE_LIFETIME = "120"  # 2 hours (in minutes)

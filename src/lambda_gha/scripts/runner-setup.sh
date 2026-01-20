@@ -4,6 +4,10 @@ set -e
 # This script is fetched and executed by the minimal userdata script
 # All variables are already exported by the userdata script
 
+# Lambda API configuration (defined early for error handling before shared functions load)
+LAMBDA_API_HOST="${LAMBDA_API_HOST:-cloud.lambda.ai}"
+LAMBDA_API_BASE="${LAMBDA_API_BASE:-https://$LAMBDA_API_HOST/api/v1}"
+
 # Enable debug tracing to a file for troubleshooting
 exec 2> >(tee -a /var/log/runner-debug.log >&2)
 
@@ -32,7 +36,7 @@ if ! curl -sSL "$FUNCTIONS_URL" -o /tmp/shared-functions.sh && ! wget -q "$FUNCT
   # Terminate via Lambda API
   curl -s -X POST -H "Authorization: Bearer $LAMBDA_API_KEY" -H "Content-Type: application/json" \
     -d "{\"instance_ids\": [\"$LAMBDA_INSTANCE_ID\"]}" \
-    "https://cloud.lambdalabs.com/api/v1/instance-operations/terminate" || true
+    "$LAMBDA_API_BASE/instance-operations/terminate" || true
   exit 1
 fi
 
@@ -102,7 +106,7 @@ nohup bash -c "
   # Terminate via Lambda API
   curl -s -X POST -H 'Authorization: Bearer $LAMBDA_API_KEY' -H 'Content-Type: application/json' \
     -d '{\"instance_ids\": [\"$LAMBDA_INSTANCE_ID\"]}' \
-    'https://cloud.lambdalabs.com/api/v1/instance-operations/terminate' || true
+    '$LAMBDA_API_BASE/instance-operations/terminate' || true
 " > /var/log/max-lifetime.log 2>&1 &
 
 log "Working directory: $homedir"

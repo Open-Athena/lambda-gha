@@ -2,6 +2,10 @@
 # Shared functions for runner scripts
 # These functions are used by multiple scripts throughout the runner lifecycle
 
+# Lambda API configuration
+LAMBDA_API_HOST="${LAMBDA_API_HOST:-cloud.lambda.ai}"
+LAMBDA_API_BASE="${LAMBDA_API_BASE:-https://$LAMBDA_API_HOST/api/v1}"
+
 # Logging functions
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a /var/log/runner-setup.log; }
 log_error() { log "ERROR: $1" >&2; }
@@ -52,7 +56,7 @@ terminate_lambda_instance() {
     -H "Authorization: Bearer $LAMBDA_API_KEY" \
     -H "Content-Type: application/json" \
     -d "{\"instance_ids\": [\"$LAMBDA_INSTANCE_ID\"]}" \
-    "https://cloud.lambdalabs.com/api/v1/instance-operations/terminate")
+    "$LAMBDA_API_BASE/instance-operations/terminate")
 
   log "Termination response: $response"
 }
