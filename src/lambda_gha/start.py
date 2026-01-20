@@ -13,7 +13,7 @@ from lambda_gha.defaults import (
 )
 
 INSTANCE_POLL_INTERVAL = 5
-INSTANCE_POLL_TIMEOUT = 300
+INSTANCE_POLL_TIMEOUT = 600  # Lambda instances can take 5+ minutes to boot
 
 
 def resolve_ref_to_sha(ref: str) -> str:
