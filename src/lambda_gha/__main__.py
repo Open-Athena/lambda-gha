@@ -72,8 +72,8 @@ def main():
 
     gh = GitHubInstance(token=token, repo=repo)
 
-    # Get runner release
-    runner_release = gh.get_latest_runner_release()
+    # Get runner release (Lambda instances are Linux x64)
+    runner_release = gh.get_latest_runner_release(platform="linux", architecture="x64")
     params["runner_release"] = runner_release
 
     # Generate runner tokens
