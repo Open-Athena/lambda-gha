@@ -13,37 +13,11 @@ if [ "$debug" = "true" ] || [ "$debug" = "True" ] || [ "$debug" = "trace" ] || [
   set -x
 fi
 
-# Determine home directory early since it's needed by shared functions
-if [ -z "$homedir" ] || [ "$homedir" = "AUTO" ]; then
-  # Try to find the default non-root user's home directory
-  for user in ubuntu ec2-user centos admin debian fedora alpine arch; do
-    if id "$user" &>/dev/null; then
-      homedir="/home/$user"
-      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Auto-detected homedir: $homedir" | tee -a /var/log/runner-setup.log
-      break
-    fi
-  done
-
-  # Fallback if no standard user found
-  if [ -z "$homedir" ] || [ "$homedir" = "AUTO" ]; then
-    homedir=$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 && $6 ~ /^\/home\// {print $6}' | while read dir; do
-      if [ -d "$dir" ]; then
-        echo "$dir"
-        break
-      fi
-    done)
-    if [ -z "$homedir" ]; then
-      homedir="/home/ec2-user"  # Ultimate fallback
-      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Using fallback homedir: $homedir" | tee -a /var/log/runner-setup.log
-    else
-      owner=$(stat -c "%U" "$homedir" 2>/dev/null || stat -f "%Su" "$homedir" 2>/dev/null)
-      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Detected homedir: $homedir (owner: $owner)" | tee -a /var/log/runner-setup.log
-    fi
-  fi
-else
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Using specified homedir: $homedir" | tee -a /var/log/runner-setup.log
-fi
+# Lambda instances are Ubuntu-based with ubuntu user
+homedir="${homedir:-/home/ubuntu}"
 export homedir
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Using homedir: $homedir" | tee -a /var/log/runner-setup.log
 
 # Set common paths
 BIN_DIR=/usr/local/bin
@@ -55,18 +29,23 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Fetching shared functions from GitHub (SHA:
 FUNCTIONS_URL="https://raw.githubusercontent.com/Open-Athena/lambda-gha/${action_sha}/src/lambda_gha/templates/shared-functions.sh"
 if ! curl -sSL "$FUNCTIONS_URL" -o /tmp/shared-functions.sh && ! wget -q "$FUNCTIONS_URL" -O /tmp/shared-functions.sh; then
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to download shared functions" | tee -a /var/log/runner-setup.log
-  shutdown -h now
+  # Terminate via Lambda API
+  curl -s -X POST -H "Authorization: Bearer $LAMBDA_API_KEY" -H "Content-Type: application/json" \
+    -d "{\"instance_ids\": [\"$LAMBDA_INSTANCE_ID\"]}" \
+    "https://cloud.lambdalabs.com/api/v1/instance-operations/terminate" || true
   exit 1
 fi
 
 # Write shared functions that will be used by multiple scripts
 cat > $BIN_DIR/runner-common.sh << EOSF
 # Auto-generated shared functions and variables
-# Set homedir for scripts that source this file
 homedir="$homedir"
 debug="$debug"
 RUNNER_STATE_DIR="$RUNNER_STATE_DIR"
-export homedir debug RUNNER_STATE_DIR
+LAMBDA_API_KEY="$LAMBDA_API_KEY"
+LAMBDA_INSTANCE_ID="$LAMBDA_INSTANCE_ID"
+LAMBDA_INSTANCE_IP="$LAMBDA_INSTANCE_IP"
+export homedir debug RUNNER_STATE_DIR LAMBDA_API_KEY LAMBDA_INSTANCE_ID LAMBDA_INSTANCE_IP
 
 EOSF
 
@@ -76,8 +55,8 @@ cat /tmp/shared-functions.sh >> $BIN_DIR/runner-common.sh
 chmod +x $BIN_DIR/runner-common.sh
 source $BIN_DIR/runner-common.sh
 
-logger "EC2-GHA: Starting userdata script"
-trap 'logger "EC2-GHA: Script failed at line $LINENO with exit code $?"' ERR
+logger "lambda-gha: Starting userdata script"
+trap 'logger "lambda-gha: Script failed at line $LINENO with exit code $?"' ERR
 trap 'terminate_instance "Setup script failed with error on line $LINENO"' ERR
 # Handle watchdog termination signal
 trap 'if [ -f $RUNNER_STATE_DIR/watchdog-terminate ]; then terminate_instance "No runners registered within timeout"; else terminate_instance "Script terminated"; fi' TERM
@@ -109,121 +88,27 @@ fi
 exec >> /var/log/runner-setup.log 2>&1
 log "Starting runner setup"
 
-# Fetch instance metadata for labeling and logging
-INSTANCE_TYPE=$(get_metadata "instance-type")
-INSTANCE_ID=$(get_metadata "instance-id")
-REGION=$(get_metadata "placement/region")
-AZ=$(get_metadata "placement/availability-zone")
-log "Instance metadata: Type=${INSTANCE_TYPE} ID=${INSTANCE_ID} Region=${REGION} AZ=${AZ}"
+# Lambda instance info from environment (no metadata service)
+INSTANCE_ID="${LAMBDA_INSTANCE_ID:-unknown}"
+INSTANCE_IP="${LAMBDA_INSTANCE_IP:-unknown}"
+log "Lambda instance: ID=${INSTANCE_ID} IP=${INSTANCE_IP}"
 
 # Set up maximum lifetime timeout - instance will terminate after this time regardless of job status
 MAX_LIFETIME_MINUTES=$max_instance_lifetime
 log "Setting up maximum lifetime timeout: ${MAX_LIFETIME_MINUTES} minutes"
-# Use ; instead of && so shutdown runs even if echo fails (e.g., disk full)
-# Try multiple shutdown methods as fallbacks
 nohup bash -c "
   sleep ${MAX_LIFETIME_MINUTES}m
   echo '[$(date)] Maximum lifetime reached' 2>/dev/null || true
-  # Try normal shutdown
-  shutdown -h now 2>/dev/null || {
-    # If shutdown fails, try halt
-    halt -f 2>/dev/null || {
-      # If halt fails, try sysrq if available (Linux only)
-      if [ -w /proc/sysrq-trigger ]; then
-        echo 1 > /proc/sys/kernel/sysrq 2>/dev/null
-        echo o > /proc/sysrq-trigger 2>/dev/null
-      fi
-      # Last resort: force immediate reboot
-      reboot -f 2>/dev/null || true
-    }
-  }
+  # Terminate via Lambda API
+  curl -s -X POST -H 'Authorization: Bearer $LAMBDA_API_KEY' -H 'Content-Type: application/json' \
+    -d '{\"instance_ids\": [\"$LAMBDA_INSTANCE_ID\"]}' \
+    'https://cloud.lambdalabs.com/api/v1/instance-operations/terminate' || true
 " > /var/log/max-lifetime.log 2>&1 &
-
-# Configure CloudWatch Logs if a log group is specified
-if [ "$cloudwatch_logs_group" != "" ]; then
-  log "Installing CloudWatch agent"
-
-  # Detect architecture for CloudWatch agent
-  ARCH=$(uname -m)
-  if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
-    CW_ARCH="arm64"
-  else
-    CW_ARCH="amd64"
-  fi
-
-  if command -v dpkg >/dev/null 2>&1; then
-    wait_for_dpkg_lock
-    wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/${CW_ARCH}/latest/amazon-cloudwatch-agent.deb
-    dpkg -i -E ./amazon-cloudwatch-agent.deb
-    rm amazon-cloudwatch-agent.deb
-  elif command -v rpm >/dev/null 2>&1; then
-    # Note: For RPM-based systems, the path structure might differ
-    wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/amazon_linux/${CW_ARCH}/latest/amazon-cloudwatch-agent.rpm
-    rpm -U ./amazon-cloudwatch-agent.rpm
-    rm amazon-cloudwatch-agent.rpm
-  fi
-
-  # Build CloudWatch config
-  cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << EOF
-{
-  "agent": {
-    "run_as_user": "cwagent"
-  },
-  "logs": {
-    "logs_collected": {
-      "files": {
-        "collect_list": [
-          { "file_path": "/var/log/runner-setup.log"   , "log_group_name": "$cloudwatch_logs_group", "log_stream_name": "{instance_id}/runner-setup" , "timezone": "UTC" },
-          { "file_path": "/var/log/runner-debug.log"   , "log_group_name": "$cloudwatch_logs_group", "log_stream_name": "{instance_id}/runner-debug" , "timezone": "UTC" },
-          { "file_path": "/tmp/job-started-hook.log"   , "log_group_name": "$cloudwatch_logs_group", "log_stream_name": "{instance_id}/job-started"  , "timezone": "UTC" },
-          { "file_path": "/tmp/job-completed-hook.log" , "log_group_name": "$cloudwatch_logs_group", "log_stream_name": "{instance_id}/job-completed", "timezone": "UTC" },
-          { "file_path": "/tmp/termination-check.log"  , "log_group_name": "$cloudwatch_logs_group", "log_stream_name": "{instance_id}/termination"  , "timezone": "UTC" },
-          { "file_path": "/tmp/runner-*-config.log"    , "log_group_name": "$cloudwatch_logs_group", "log_stream_name": "{instance_id}/runner-config", "timezone": "UTC" },
-          { "file_path": "$homedir/_diag/Runner_**.log", "log_group_name": "$cloudwatch_logs_group", "log_stream_name": "{instance_id}/runner-diag"  , "timezone": "UTC" },
-          { "file_path": "$homedir/_diag/Worker_**.log", "log_group_name": "$cloudwatch_logs_group", "log_stream_name": "{instance_id}/worker-diag"  , "timezone": "UTC" }
-        ]
-      }
-    }
-  }
-}
-EOF
-
-  if ! /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s; then
-    log_error "Failed to start CloudWatch agent"
-    terminate_instance "CloudWatch agent startup failed"
-  fi
-
-  log "CloudWatch agent started successfully"
-fi
-
-# Configure SSH access if public key provided (useful for debugging)
-if [ -n "$ssh_pubkey" ]; then
-  log "Configuring SSH access"
-  # Determine the default user based on the home directory owner
-  DEFAULT_USER=$(stat -c "%U" "$homedir" 2>/dev/null || echo "root")
-  mkdir -p "$homedir/.ssh"
-  chmod 700 "$homedir/.ssh"
-  echo "$ssh_pubkey" >> "$homedir/.ssh/authorized_keys"
-  chmod 600 "$homedir/.ssh/authorized_keys"
-  if [ "$DEFAULT_USER" != "root" ]; then
-    chown -R "$DEFAULT_USER:$DEFAULT_USER" "$homedir/.ssh"
-  fi
-  log "SSH key added for user $DEFAULT_USER"
-fi
 
 log "Working directory: $homedir"
 cd "$homedir"
 
-# Run any pre-runner script provided by the user
-if [ -n "$script" ]; then
-  echo "$script" > pre-runner-script.sh
-  log "Running pre-runner script"
-  source pre-runner-script.sh
-fi
 export RUNNER_ALLOW_RUNASROOT=1
-
-# Number of runners to configure on this instance
-RUNNERS_PER_INSTANCE=$runners_per_instance
 
 # Download GitHub Actions runner binary
 ARCH=$(uname -m)
@@ -296,6 +181,9 @@ Type=oneshot
 Environment="RUNNER_GRACE_PERIOD=$runner_grace_period"
 Environment="RUNNER_INITIAL_GRACE_PERIOD=$runner_initial_grace_period"
 Environment="RUNNER_POLL_INTERVAL=$runner_poll_interval"
+Environment="LAMBDA_API_KEY=$LAMBDA_API_KEY"
+Environment="LAMBDA_INSTANCE_ID=$LAMBDA_INSTANCE_ID"
+Environment="LAMBDA_INSTANCE_IP=$LAMBDA_INSTANCE_IP"
 ExecStart=$BIN_DIR/check-runner-termination.sh
 EOF
 
@@ -314,84 +202,38 @@ systemctl daemon-reload
 systemctl enable runner-termination-check.timer
 systemctl start runner-termination-check.timer
 
-# Build metadata labels (these will be added to the runner labels)
-METADATA_LABELS=",${INSTANCE_ID},${INSTANCE_TYPE}"
-# Add instance name as a label if provided
-if [ -n "$instance_name" ]; then
-  INSTANCE_NAME_LABEL=$(echo "$instance_name" | tr ' /' '-' | tr -cd '[:alnum:]-_#')
-  METADATA_LABELS="${METADATA_LABELS},${INSTANCE_NAME_LABEL}"
-fi
+# Build metadata labels
+METADATA_LABELS=",${INSTANCE_ID}"
 
-log "Setting up $RUNNERS_PER_INSTANCE runner(s)"
+log "Setting up runner"
 
-# Export functions for subprocesses (variables already exported from runner-common.sh)
+# Export functions for subprocesses
 export -f configure_runner
 export -f log
 export -f log_error
-export -f get_metadata
-export -f flush_cloudwatch_logs
 export -f deregister_all_runners
 export -f debug_sleep_and_shutdown
+export -f terminate_lambda_instance
 export -f wait_for_dpkg_lock
 
-# Parse space-delimited tokens and pipe-delimited labels
-IFS=' ' read -ra tokens <<< "$runner_tokens"
-IFS='|' read -ra labels <<< "$runner_labels"
+# Single runner setup (Lambda doesn't need multi-runner complexity for now)
+token="$runner_token"
+labels="$runner_labels"
 
-num_runners=${#tokens[@]}
-log "Configuring $num_runners runner(s) in parallel"
-
-# Start configuration for each runner in parallel
-pids=()
-for i in ${!tokens[@]}; do
-  token=${tokens[$i]}
-  label=${labels[$i]:-}
-  if [ -z "$token" ]; then
-    log_error "No token for runner $i"
-    continue
-  fi
-  (
-    # Override ERR trap in subshell to prevent global side effects
-    trap 'echo "Subshell error on line $LINENO" >&2; exit 1' ERR
-    configure_runner $i "$token" "${label}$METADATA_LABELS" "$homedir" "$repo" "$INSTANCE_ID" "$runner_grace_period" "$runner_initial_grace_period"
-    echo $? > /tmp/runner-$i-status
-  ) &
-  pids+=($!)
-  log "Started configuration for runner $i (PID: ${pids[-1]})"
-done
-
-# Wait for all background jobs to complete
-log "Waiting for all runner configurations to complete..."
-failed=0
-succeeded=0
-for i in ${!pids[@]}; do
-  wait ${pids[$i]}
-  if [ -f /tmp/runner-$i-status ]; then
-    status=$(cat /tmp/runner-$i-status)
-    rm -f /tmp/runner-$i-status
-    if [ "$status" != "0" ]; then
-      log_error "Runner $i configuration failed"
-      failed=$((failed + 1))
-    else
-      succeeded=$((succeeded + 1))
-    fi
-  fi
-done
-
-# Allow partial success - only terminate if ALL runners failed
-if [ $succeeded -eq 0 ] && [ $failed -gt 0 ]; then
-  terminate_instance "All runners failed to register"
-elif [ $failed -gt 0 ]; then
-  log "WARNING: $failed runner(s) failed, but $succeeded succeeded. Continuing with partial capacity."
+if [ -z "$token" ]; then
+  log_error "No runner token provided"
+  terminate_instance "No runner token"
 fi
 
-if [ $succeeded -gt 0 ]; then
-  log "$succeeded runner(s) registered and started successfully"
-  touch $RUNNER_STATE_DIR/registered
-else
-  log_error "No runners registered successfully"
-  terminate_instance "No runners registered successfully"
+configure_runner 0 "$token" "${labels}${METADATA_LABELS}" "$homedir" "$repo" "$INSTANCE_ID" "$runner_grace_period" "$runner_initial_grace_period"
+result=$?
+
+if [ $result -ne 0 ]; then
+  terminate_instance "Runner failed to register"
 fi
+
+log "Runner registered and started successfully"
+touch $RUNNER_STATE_DIR/registered
 
 # Kill registration watchdog now that runners are registered
 if [ -f $RUNNER_STATE_DIR/watchdog.pid ]; then

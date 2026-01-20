@@ -94,16 +94,26 @@ def main():
     print(f"Waiting for {len(instance_ids)} instance(s) to be ready...")
     details = starter.wait_until_ready(instance_ids)
 
-    # TODO: SSH into instances and run setup scripts
-    # For now, we'll need to handle this differently since Lambda
-    # doesn't support cloud-init userdata. Options:
-    # 1. SSH in from this action and run setup
-    # 2. Use a pre-baked AMI with runner pre-installed
-    # 3. Have a separate "setup" step in the workflow
-
+    # SSH into each instance and run setup
     for instance_id, meta in mapping.items():
         instance_details = details.get(instance_id, {})
-        print(f"Instance {instance_id}: IP={instance_details.get('ip')}, label={meta['labels']}")
+        ip = instance_details.get("ip")
+        if not ip:
+            raise RuntimeError(f"No IP address for instance {instance_id}")
+
+        print(f"Instance {instance_id}: IP={ip}, label={meta['labels']}")
+
+        # Add instance IP to env vars
+        env_vars = meta["env_vars"]
+        env_vars["LAMBDA_INSTANCE_IP"] = ip
+
+        # Execute setup via SSH
+        starter.execute_setup_via_ssh(
+            instance_id=instance_id,
+            ip=ip,
+            env_vars=env_vars,
+            action_sha=meta["action_sha"],
+        )
 
     # Output mapping for GitHub Actions
     starter.set_instance_mapping(mapping)

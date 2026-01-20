@@ -1,9 +1,7 @@
-import importlib.resources
 import subprocess
 import time
 from dataclasses import dataclass, field
 from os import environ
-from string import Template
 
 import requests
 from gha_runner import gh
@@ -150,35 +148,19 @@ class StartLambdaLabs:
 
         return template_vars
 
-    def _build_user_data(self, **kwargs) -> str:
-        """Build the user data script from template."""
+    def create_instances(self) -> dict[str, dict]:
+        """Create instances on Lambda Labs.
+
+        Returns
+        -------
+        dict[str, dict]
+            Mapping of instance IDs to runner metadata (label, labels, env_vars, action_sha).
+        """
         from lambda_gha.log_constants import (
             LOG_PREFIX_JOB_COMPLETED,
             LOG_PREFIX_JOB_STARTED,
         )
 
-        kwargs['log_prefix_job_started'] = LOG_PREFIX_JOB_STARTED
-        kwargs['log_prefix_job_completed'] = LOG_PREFIX_JOB_COMPLETED
-        kwargs.setdefault('instance_name', '')
-
-        template = importlib.resources.files("lambda_gha").joinpath("templates/user-script.sh.templ")
-        with template.open() as f:
-            template_content = f.read()
-
-        try:
-            parsed = Template(template_content)
-            return parsed.substitute(**kwargs)
-        except KeyError as e:
-            raise ValueError(f"Missing required template parameter: {e}") from e
-
-    def create_instances(self) -> dict[str, str]:
-        """Create instances on Lambda Labs.
-
-        Returns
-        -------
-        dict[str, str]
-            Mapping of instance IDs to runner labels.
-        """
         if not self.gh_runner_tokens:
             raise ValueError("No GitHub runner tokens provided")
         if not self.runner_release:
@@ -190,37 +172,17 @@ class StartLambdaLabs:
         if not self.ssh_key_names:
             raise ValueError("No SSH key names provided")
 
+        # Resolve action ref once (same for all instances)
+        action_ref = environ.get("INPUT_ACTION_REF")
+        if not action_ref:
+            raise ValueError("action_ref is required")
+        action_sha = resolve_ref_to_sha(action_ref)
+
         id_dict = {}
 
         for idx, token in enumerate(self.gh_runner_tokens):
             label = gh.GitHubInstance.generate_random_label()
             labels = f"{self.labels},{label}" if self.labels else label
-
-            # Resolve action ref
-            action_ref = environ.get("INPUT_ACTION_REF")
-            if not action_ref:
-                raise ValueError("action_ref is required")
-            action_sha = resolve_ref_to_sha(action_ref)
-
-            # Build user data script
-            user_data = self._build_user_data(
-                action_sha=action_sha,
-                api_key=self.api_key,
-                debug=self.debug,
-                github_workflow=environ.get("GITHUB_WORKFLOW", ""),
-                github_run_id=environ.get("GITHUB_RUN_ID", ""),
-                github_run_number=environ.get("GITHUB_RUN_NUMBER", ""),
-                max_instance_lifetime=self.max_instance_lifetime,
-                repo=self.repo,
-                runner_grace_period=self.runner_grace_period,
-                runner_initial_grace_period=self.runner_initial_grace_period,
-                runner_poll_interval=self.runner_poll_interval,
-                runner_registration_timeout=environ.get("INPUT_RUNNER_REGISTRATION_TIMEOUT", "").strip() or RUNNER_REGISTRATION_TIMEOUT,
-                runner_release=self.runner_release,
-                runner_labels=labels,
-                runner_token=token,
-                userdata=self.userdata,
-            )
 
             # Lambda Labs instance name (visible in dashboard)
             template_vars = self._get_template_vars(idx)
@@ -237,9 +199,6 @@ class StartLambdaLabs:
                 "name": instance_name,
             }
 
-            # Lambda doesn't support userdata/cloud-init directly,
-            # so we need to SSH in after launch to run setup.
-            # Store the user_data for later execution.
             print(f"Launching Lambda instance: {self.instance_type} in {self.region}")
             result = self._api_request("POST", "/instance-operations/launch", payload)
 
@@ -254,11 +213,31 @@ class StartLambdaLabs:
             instance_id = instance_ids[0]
             print(f"Launched instance {instance_id}")
 
-            # Store user_data to execute after instance is ready
+            # Build env vars for SSH setup (will be set on instance)
+            env_vars = {
+                "action_sha": action_sha,
+                "debug": self.debug or "",
+                "LAMBDA_API_KEY": self.api_key,
+                "LAMBDA_INSTANCE_ID": instance_id,
+                "log_prefix_job_started": LOG_PREFIX_JOB_STARTED,
+                "log_prefix_job_completed": LOG_PREFIX_JOB_COMPLETED,
+                "max_instance_lifetime": self.max_instance_lifetime,
+                "repo": self.repo,
+                "runner_grace_period": self.runner_grace_period,
+                "runner_initial_grace_period": self.runner_initial_grace_period,
+                "runner_labels": labels,
+                "runner_poll_interval": self.runner_poll_interval,
+                "runner_registration_timeout": environ.get("INPUT_RUNNER_REGISTRATION_TIMEOUT", "").strip() or RUNNER_REGISTRATION_TIMEOUT,
+                "runner_release": self.runner_release,
+                "runner_token": token,
+                "userdata": self.userdata or "",
+            }
+
             id_dict[instance_id] = {
                 "label": label,
                 "labels": labels,
-                "user_data": user_data,
+                "env_vars": env_vars,
+                "action_sha": action_sha,
             }
 
         return id_dict
@@ -330,6 +309,95 @@ class StartLambdaLabs:
         result = self._api_request("POST", "/instance-operations/terminate", payload)
         print(f"Terminated instances: {ids}")
         return result
+
+    def execute_setup_via_ssh(
+        self,
+        instance_id: str,
+        ip: str,
+        env_vars: dict[str, str],
+        action_sha: str,
+        ssh_user: str = "ubuntu",
+        max_retries: int = 30,
+        retry_delay: int = 10,
+    ):
+        """Execute setup script on instance via SSH.
+
+        SSH in, export env vars, then curl and run the setup script from GitHub.
+
+        Parameters
+        ----------
+        instance_id : str
+            Lambda instance ID.
+        ip : str
+            Instance IP address.
+        env_vars : dict[str, str]
+            Environment variables to export before running setup.
+        action_sha : str
+            Git SHA for fetching scripts from GitHub.
+        ssh_user : str
+            SSH username (default: ubuntu for Lambda instances).
+        max_retries : int
+            Maximum SSH connection attempts.
+        retry_delay : int
+            Seconds between retry attempts.
+        """
+        print(f"Connecting to {ssh_user}@{ip} to execute setup...")
+
+        # SSH options for non-interactive, key-based auth
+        ssh_opts = [
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-o", "BatchMode=yes",
+        ]
+
+        # Wait for SSH to be available
+        for attempt in range(1, max_retries + 1):
+            try:
+                result = subprocess.run(
+                    ["ssh"] + ssh_opts + [f"{ssh_user}@{ip}", "echo", "SSH ready"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if result.returncode == 0:
+                    print(f"SSH connection established (attempt {attempt})")
+                    break
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception as e:
+                print(f"SSH attempt {attempt} failed: {e}")
+
+            if attempt < max_retries:
+                print(f"Waiting for SSH... (attempt {attempt}/{max_retries})")
+                time.sleep(retry_delay)
+            else:
+                raise RuntimeError(f"Failed to connect to {ip} via SSH after {max_retries} attempts")
+
+        # Build env export commands
+        env_exports = "\n".join(f'export {k}="{v}"' for k, v in env_vars.items())
+
+        # Script URL from GitHub
+        script_url = f"https://raw.githubusercontent.com/Open-Athena/lambda-gha/{action_sha}/src/lambda_gha/scripts/runner-setup.sh"
+
+        # Build the setup command: export vars, fetch script, run it
+        setup_cmd = f'''
+{env_exports}
+curl -sSL "{script_url}" -o /tmp/runner-setup.sh
+chmod +x /tmp/runner-setup.sh
+sudo -E nohup /tmp/runner-setup.sh > /var/log/runner-setup.log 2>&1 &
+'''
+
+        print(f"Executing setup script from {script_url}...")
+        exec_result = subprocess.run(
+            ["ssh"] + ssh_opts + [f"{ssh_user}@{ip}", setup_cmd],
+            capture_output=True,
+            text=True,
+        )
+        if exec_result.returncode != 0:
+            raise RuntimeError(f"Failed to execute setup: {exec_result.stderr}")
+
+        print(f"Setup script started on {ip}")
 
     def set_instance_mapping(self, mapping: dict[str, dict]):
         """Output instance mapping for downstream jobs.
