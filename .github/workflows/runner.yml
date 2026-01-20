@@ -25,6 +25,11 @@ on:
         required: false
         type: string
         default: "main"
+      check_availability:
+        description: "Pre-check capacity before attempting launches (default: true)"
+        required: false
+        type: string
+        default: "true"
       debug:
         description: "Debug mode: false=off, true/trace=set -x only, number=set -x + sleep N minutes before shutdown"
         required: false
@@ -123,6 +128,7 @@ jobs:
         uses: ./
         with:
           action_ref: ${{ inputs.action_ref }}
+          check_availability: ${{ inputs.check_availability }}
           debug: ${{ inputs.debug }}
           extra_gh_labels: ${{ inputs.extra_gh_labels }}
           instance_count: ${{ inputs.instance_count }}

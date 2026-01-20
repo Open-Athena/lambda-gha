@@ -48,6 +48,7 @@ def main():
 
     builder = (
         EnvVarBuilder(env)
+        .update_state("INPUT_CHECK_AVAILABILITY", "check_availability")
         .update_state("INPUT_DEBUG", "debug")
         .update_state("INPUT_EXTRA_GH_LABELS", "labels")
         .update_state("INPUT_INSTANCE_COUNT", "instance_count", type_hint=int)
@@ -92,6 +93,10 @@ def main():
 
     retry_delay_str = params.pop("retry_delay", None)
     params["retry_delay"] = float(retry_delay_str) if retry_delay_str else DEFAULT_RETRY_DELAY
+
+    # Parse check_availability (defaults to True)
+    check_avail_str = params.pop("check_availability", None) or "true"
+    params["check_availability"] = check_avail_str.lower() not in ("false", "0", "no")
 
     # Parse SSH key names (comma-separated)
     ssh_key_names_str = params.pop("ssh_key_names", None)

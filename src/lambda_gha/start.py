@@ -115,6 +115,7 @@ class StartLambdaLabs:
     runner_poll_interval: str = "10"
     retry_count: int = 1
     retry_delay: float = 5.0
+    check_availability: bool = True
     runner_release: str = ""
     ssh_private_key: str = ""
     userdata: str = ""
@@ -173,6 +174,76 @@ class StartLambdaLabs:
 
             resp.raise_for_status()
         return resp.json()
+
+    def get_availability(self) -> dict[str, list[str]]:
+        """Get current capacity availability for all instance types.
+
+        Returns
+        -------
+        dict[str, list[str]]
+            Mapping of instance type names to list of regions with capacity.
+            Empty list means no capacity available anywhere.
+        """
+        result = self._api_request("GET", "/instance-types")
+        data = result.get("data", {})
+
+        availability = {}
+        for type_name, info in data.items():
+            regions = info.get("regions_with_capacity_available", [])
+            availability[type_name] = [r["name"] for r in regions]
+
+        return availability
+
+    def filter_available_options(
+        self,
+        instance_types: list[str],
+        regions: list[str],
+    ) -> list[tuple[str, str]]:
+        """Filter instance type/region combinations to only those with capacity.
+
+        Parameters
+        ----------
+        instance_types : list[str]
+            Requested instance types in preference order.
+        regions : list[str]
+            Requested regions in preference order.
+
+        Returns
+        -------
+        list[tuple[str, str]]
+            List of (instance_type, region) tuples that have capacity,
+            in preference order.
+        """
+        availability = self.get_availability()
+
+        available_options = []
+        skipped = []
+
+        for instance_type in instance_types:
+            available_regions = availability.get(instance_type, [])
+
+            if not available_regions:
+                skipped.append((instance_type, "all regions"))
+                continue
+
+            for region in regions:
+                if region in available_regions:
+                    available_options.append((instance_type, region))
+                else:
+                    skipped.append((instance_type, region))
+
+        # Log what we're skipping
+        if skipped:
+            print(f"Skipping {len(skipped)} options with no capacity:")
+            for instance_type, region in skipped[:5]:  # Show first 5
+                print(f"  - {instance_type} in {region}")
+            if len(skipped) > 5:
+                print(f"  - ... and {len(skipped) - 5} more")
+
+        if available_options:
+            print(f"Found {len(available_options)} options with capacity")
+
+        return available_options
 
     def _get_template_vars(self, idx: int = None) -> dict:
         """Build template variables for instance naming."""
@@ -319,6 +390,32 @@ class StartLambdaLabs:
         id_dict = {}
         all_attempts: list[LaunchAttempt] = []
 
+        # Pre-filter to available options if enabled
+        if self.check_availability:
+            print("Checking instance availability...")
+            available_options = self.filter_available_options(
+                self.instance_types, self.regions
+            )
+            if not available_options:
+                # No capacity anywhere - fail fast
+                for instance_type in self.instance_types:
+                    for region in self.regions:
+                        all_attempts.append(LaunchAttempt(
+                            instance_type=instance_type,
+                            region=region,
+                            attempt=0,
+                            error="No capacity (pre-check)",
+                        ))
+                summary = format_launch_summary(all_attempts, success=False)
+                write_summary(summary)
+                emit_all_exhausted_error(all_attempts)
+                raise AllCapacityExhaustedError(all_attempts)
+        else:
+            # Try all combinations without pre-check
+            available_options = [
+                (t, r) for t in self.instance_types for r in self.regions
+            ]
+
         for idx, token in enumerate(self.gh_runner_tokens):
             label = gh.GitHubInstance.generate_random_label()
             labels = f"{self.labels},{label}" if self.labels else label
@@ -329,74 +426,70 @@ class StartLambdaLabs:
             if len(self.gh_runner_tokens) > 1:
                 instance_name = f"{instance_name}-{idx}"
 
-            # Try each instance type, then each region, with retries
+            # Try each available instance type/region combo with retries
             instance_id = None
             successful_type = None
             successful_region = None
             token_attempts: list[LaunchAttempt] = []
 
-            for instance_type in self.instance_types:
+            for instance_type, region in available_options:
                 if instance_id:
                     break
 
-                for region in self.regions:
-                    if instance_id:
-                        break
+                for retry in range(self.retry_count):
+                    attempt = LaunchAttempt(
+                        instance_type=instance_type,
+                        region=region,
+                        attempt=retry + 1,
+                    )
 
-                    for retry in range(self.retry_count):
-                        attempt = LaunchAttempt(
+                    try:
+                        instance_id = self._launch_single_instance(
                             instance_type=instance_type,
                             region=region,
-                            attempt=retry + 1,
+                            instance_name=instance_name,
                         )
+                        attempt.success = True
+                        attempt.instance_id = instance_id
+                        token_attempts.append(attempt)
+                        successful_type = instance_type
+                        successful_region = region
+                        print(f"Launched instance {instance_id}")
+                        break
 
-                        try:
-                            instance_id = self._launch_single_instance(
-                                instance_type=instance_type,
-                                region=region,
-                                instance_name=instance_name,
-                            )
-                            attempt.success = True
-                            attempt.instance_id = instance_id
-                            token_attempts.append(attempt)
-                            successful_type = instance_type
-                            successful_region = region
-                            print(f"Launched instance {instance_id}")
+                    except CapacityError as e:
+                        attempt.error = str(e)
+                        token_attempts.append(attempt)
+
+                        # Determine what we'll try next for the warning message
+                        next_option = self._get_next_option_from_list(
+                            available_options, instance_type, region
+                        )
+                        emit_capacity_warning(instance_type, region, next_option)
+
+                        # Don't retry same type+region for capacity errors
+                        break
+
+                    except RateLimitError as e:
+                        attempt.error = str(e)
+                        token_attempts.append(attempt)
+
+                        if retry < self.retry_count - 1:
+                            delay = self.retry_delay * (2 ** retry)
+                            if e.retry_after:
+                                delay = max(delay, e.retry_after)
+                            print(f"Rate limited, waiting {delay:.1f}s...")
+                            time.sleep(delay)
+                        else:
+                            # Move to next option after exhausting retries
                             break
 
-                        except CapacityError as e:
-                            attempt.error = str(e)
-                            token_attempts.append(attempt)
-
-                            # Determine what we'll try next for the warning message
-                            next_option = self._get_next_option(
-                                instance_type, region, retry
-                            )
-                            emit_capacity_warning(instance_type, region, next_option)
-
-                            # Don't retry same type+region for capacity errors
-                            break
-
-                        except RateLimitError as e:
-                            attempt.error = str(e)
-                            token_attempts.append(attempt)
-
-                            if retry < self.retry_count - 1:
-                                delay = self.retry_delay * (2 ** retry)
-                                if e.retry_after:
-                                    delay = max(delay, e.retry_after)
-                                print(f"Rate limited, waiting {delay:.1f}s...")
-                                time.sleep(delay)
-                            else:
-                                # Move to next region after exhausting retries
-                                break
-
-                        except ConfigurationError as e:
-                            # Non-retryable - fail immediately
-                            attempt.error = str(e)
-                            token_attempts.append(attempt)
-                            all_attempts.extend(token_attempts)
-                            raise
+                    except ConfigurationError as e:
+                        # Non-retryable - fail immediately
+                        attempt.error = str(e)
+                        token_attempts.append(attempt)
+                        all_attempts.extend(token_attempts)
+                        raise
 
             all_attempts.extend(token_attempts)
 
@@ -451,6 +544,39 @@ class StartLambdaLabs:
             raise AllCapacityExhaustedError(all_attempts)
 
         return id_dict
+
+    def _get_next_option_from_list(
+        self,
+        options: list[tuple[str, str]],
+        current_type: str,
+        current_region: str,
+    ) -> str:
+        """Get a description of what will be tried next from a filtered options list.
+
+        Parameters
+        ----------
+        options : list[tuple[str, str]]
+            List of (instance_type, region) tuples to try.
+        current_type : str
+            The instance type that just failed.
+        current_region : str
+            The region that just failed.
+
+        Returns
+        -------
+        str
+            Description of the next option to try, or empty string if exhausted.
+        """
+        try:
+            current_idx = options.index((current_type, current_region))
+            if current_idx + 1 < len(options):
+                next_type, next_region = options[current_idx + 1]
+                if next_type == current_type:
+                    return f"{next_type} in {next_region}"
+                return f"{next_type}"
+        except ValueError:
+            pass
+        return ""
 
     def _get_next_option(
         self,
