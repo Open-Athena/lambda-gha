@@ -27,6 +27,11 @@ def main():
     token = environ["GH_PAT"]
     api_key = environ["LAMBDA_API_KEY"]
 
+    # Debug token info (without revealing the actual token)
+    print(f"GH_PAT length: {len(token)}")
+    print(f"GH_PAT prefix: {token[:4]}..." if len(token) > 4 else f"GH_PAT too short: {len(token)}")
+    print(f"GH_PAT has newline: {chr(10) in token or chr(13) in token}")
+
     builder = (
         EnvVarBuilder(env)
         .update_state("INPUT_DEBUG", "debug")
