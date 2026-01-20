@@ -19,3 +19,7 @@ INSTANCE_NAME = "$repo/$name#$run"
 
 # Default instance count
 INSTANCE_COUNT = 1
+
+# Retry defaults
+DEFAULT_RETRY_COUNT = 1  # No retries by default (single attempt)
+DEFAULT_RETRY_DELAY = 5.0  # 5 seconds initial delay

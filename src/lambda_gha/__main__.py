@@ -23,6 +23,8 @@ def get_runner_release(platform: str = "linux", architecture: str = "x64") -> st
 from lambda_gha.defaults import (
     DEFAULT_INSTANCE_TYPE,
     DEFAULT_REGION,
+    DEFAULT_RETRY_COUNT,
+    DEFAULT_RETRY_DELAY,
     INSTANCE_COUNT,
     MAX_INSTANCE_LIFETIME,
     RUNNER_GRACE_PERIOD,
@@ -52,6 +54,8 @@ def main():
         .update_state("INPUT_INSTANCE_TYPE", "instance_type")
         .update_state("INPUT_MAX_INSTANCE_LIFETIME", "max_instance_lifetime")
         .update_state("INPUT_REGION", "region")
+        .update_state("INPUT_RETRY_COUNT", "retry_count")
+        .update_state("INPUT_RETRY_DELAY", "retry_delay")
         .update_state("INPUT_RUNNER_GRACE_PERIOD", "runner_grace_period")
         .update_state("INPUT_RUNNER_INITIAL_GRACE_PERIOD", "runner_initial_grace_period")
         .update_state("INPUT_RUNNER_POLL_INTERVAL", "runner_poll_interval")
@@ -73,8 +77,21 @@ def main():
     params.setdefault("runner_grace_period", RUNNER_GRACE_PERIOD)
     params.setdefault("runner_initial_grace_period", RUNNER_INITIAL_GRACE_PERIOD)
     params.setdefault("runner_poll_interval", RUNNER_POLL_INTERVAL)
-    params.setdefault("instance_type", DEFAULT_INSTANCE_TYPE)
-    params.setdefault("region", DEFAULT_REGION)
+
+    # Parse instance types (comma-separated, for fallback)
+    instance_type_str = params.pop("instance_type", None) or DEFAULT_INSTANCE_TYPE
+    params["instance_types"] = [t.strip() for t in instance_type_str.split(",") if t.strip()]
+
+    # Parse regions (comma-separated, for fallback)
+    region_str = params.pop("region", None) or DEFAULT_REGION
+    params["regions"] = [r.strip() for r in region_str.split(",") if r.strip()]
+
+    # Parse retry settings
+    retry_count_str = params.pop("retry_count", None)
+    params["retry_count"] = int(retry_count_str) if retry_count_str else DEFAULT_RETRY_COUNT
+
+    retry_delay_str = params.pop("retry_delay", None)
+    params["retry_delay"] = float(retry_delay_str) if retry_delay_str else DEFAULT_RETRY_DELAY
 
     # Parse SSH key names (comma-separated)
     ssh_key_names_str = params.pop("ssh_key_names", None)

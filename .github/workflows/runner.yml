@@ -40,7 +40,7 @@ on:
         type: string
         default: "1"
       instance_type:
-        description: "Lambda instance type (e.g., gpu_1x_a10, gpu_8x_a100_80gb_sxm4)"
+        description: "Lambda instance type(s), comma-separated for fallback (e.g., gpu_1x_a10,gpu_1x_a100)"
         required: false
         type: string
       max_instance_lifetime:
@@ -52,9 +52,19 @@ on:
         required: false
         type: string
       region:
-        description: "Lambda region (e.g., us-south-1, us-west-1)"
+        description: "Lambda region(s), comma-separated for fallback (e.g., us-east-1,us-west-1)"
         required: false
         type: string
+      retry_count:
+        description: "Number of retries per instance type/region combination (default: 1)"
+        required: false
+        type: string
+        default: "1"
+      retry_delay:
+        description: "Initial delay between retries in seconds (default: 5)"
+        required: false
+        type: string
+        default: "5"
       runner_grace_period:
         description: "Seconds before terminating after last job completes (default: 60)"
         required: false
@@ -119,6 +129,8 @@ jobs:
           instance_type: ${{ inputs.instance_type || vars.LAMBDA_INSTANCE_TYPE }}
           max_instance_lifetime: ${{ inputs.max_instance_lifetime || vars.MAX_INSTANCE_LIFETIME }}
           region: ${{ inputs.region || vars.LAMBDA_REGION }}
+          retry_count: ${{ inputs.retry_count }}
+          retry_delay: ${{ inputs.retry_delay }}
           runner_grace_period: ${{ inputs.runner_grace_period || vars.RUNNER_GRACE_PERIOD }}
           runner_initial_grace_period: ${{ inputs.runner_initial_grace_period || vars.RUNNER_INITIAL_GRACE_PERIOD }}
           runner_poll_interval: ${{ inputs.runner_poll_interval || vars.RUNNER_POLL_INTERVAL }}

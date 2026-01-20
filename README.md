@@ -61,12 +61,14 @@ gh variable set LAMBDA_SSH_KEY_NAMES --body "my-ssh-key"
 
 | Input | Description | Default |
 |-------|-------------|---------|
-| `instance_type` | Lambda instance type (e.g., `gpu_1x_a10`, `gpu_8x_a100_80gb_sxm4`) | `gpu_1x_a10` |
-| `region` | Lambda region (e.g., `us-east-1`, `us-west-1`); omit to auto-select | |
+| `instance_type` | Instance type(s), comma-separated for fallback | `gpu_1x_a10` |
+| `region` | Region(s), comma-separated for fallback; omit to auto-select | |
 | `instance_count` | Number of instances for parallel jobs | `1` |
-| `debug` | Debug mode: `false`=off, `true`=tracing, number=sleep N minutes before shutdown | `false` |
+| `retry_count` | Retries per instance/region combination | `1` |
+| `retry_delay` | Initial retry delay in seconds (exponential backoff) | `5` |
+| `debug` | Debug mode: `false`=off, `true`=tracing, number=sleep N minutes | `false` |
 | `extra_gh_labels` | Extra GitHub labels for the runner (comma-separated) | |
-| `max_instance_lifetime` | Max lifetime in minutes before shutdown | `360` |
+| `max_instance_lifetime` | Max lifetime in minutes before shutdown | `120` |
 | `runner_grace_period` | Seconds before terminating after last job | `60` |
 | `runner_initial_grace_period` | Seconds before terminating if no jobs start | `180` |
 | `userdata` | Additional script to run before runner setup | |
@@ -111,6 +113,29 @@ jobs:
     steps:
       - run: echo "Running on instance ${{ matrix.runner.idx }}"
 ```
+
+## Capacity Fallback
+
+Lambda Labs GPU instances frequently have capacity constraints. Use comma-separated values to specify fallback options:
+
+```yaml
+with:
+  # Try A10 first, fall back to A100 if unavailable
+  instance_type: gpu_1x_a10,gpu_1x_a100,gpu_1x_rtx6000
+
+  # Try multiple regions for each instance type
+  region: us-east-1,us-west-1,us-south-1
+```
+
+The action tries each instance type in order, and for each type tries each region. On capacity failures, it moves to the next option. The job summary shows all attempts:
+
+| # | Instance Type | Region | Result |
+|---|---------------|--------|--------|
+| 1 | `gpu_1x_a10` | us-east-1 | ⚠️ No capacity |
+| 2 | `gpu_1x_a10` | us-west-1 | ⚠️ No capacity |
+| 3 | `gpu_1x_a100` | us-east-1 | ✅ Launched |
+
+For rate limit errors, use `retry_count` and `retry_delay` to retry with exponential backoff.
 
 ## Key Differences from ec2-gha
 

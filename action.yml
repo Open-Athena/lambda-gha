@@ -19,7 +19,7 @@ inputs:
     required: false
     default: "1"
   instance_type:
-    description: "Lambda instance type (e.g., gpu_1x_a10, gpu_8x_a100_80gb_sxm4)"
+    description: "Lambda instance type(s), comma-separated for fallback (e.g., gpu_1x_a10,gpu_1x_a100)"
     required: false
   lambda_api_key:
     description: "Lambda Labs API key (falls back to secrets.LAMBDA_API_KEY)"
@@ -28,8 +28,16 @@ inputs:
     description: "Maximum instance lifetime in minutes before shutdown (default: 360)"
     required: false
   region:
-    description: "Lambda region (e.g., us-south-1, us-west-1)"
+    description: "Lambda region(s), comma-separated for fallback (e.g., us-east-1,us-west-1)"
     required: false
+  retry_count:
+    description: "Number of retries per instance type/region combination (default: 1)"
+    required: false
+    default: "1"
+  retry_delay:
+    description: "Initial delay between retries in seconds, uses exponential backoff (default: 5)"
+    required: false
+    default: "5"
   repo:
     description: "GitHub repo to register runner with (default: current repo)"
     required: false

@@ -7,9 +7,23 @@ import requests
 from gha_runner import gh
 from gha_runner.helper.workflow_cmds import output
 
+from lambda_gha.annotations import (
+    emit_capacity_warning,
+    emit_all_exhausted_error,
+    format_launch_summary,
+    write_summary,
+)
 from lambda_gha.defaults import (
     LAMBDA_API_BASE,
     RUNNER_REGISTRATION_TIMEOUT,
+)
+from lambda_gha.errors import (
+    AllCapacityExhaustedError,
+    CapacityError,
+    ConfigurationError,
+    LaunchAttempt,
+    RateLimitError,
+    classify_api_error,
 )
 
 INSTANCE_POLL_INTERVAL = 5
@@ -54,10 +68,12 @@ class StartLambdaLabs:
     ----------
     api_key : str
         Lambda Labs API key for authentication.
-    instance_type : str
-        Lambda instance type (e.g., "gpu_1x_a10", "gpu_8x_a100_80gb_sxm4").
-    region : str
-        Lambda region (e.g., "us-south-1", "us-west-1").
+    instance_types : list[str]
+        Lambda instance types to try in order (e.g., ["gpu_1x_a10", "gpu_1x_a100"]).
+        Falls back to next type on capacity failure.
+    regions : list[str]
+        Lambda regions to try in order (e.g., ["us-east-1", "us-west-1"]).
+        For each instance type, tries each region before moving to next type.
     repo : str
         GitHub repository (owner/repo format).
     ssh_key_names : list[str]
@@ -76,14 +92,19 @@ class StartLambdaLabs:
         Grace period in seconds before terminating if no jobs start (default: 180).
     runner_poll_interval : str
         Polling interval in seconds for termination check (default: 10).
+    retry_count : int
+        Number of retries per instance type/region combination (default: 1).
+    retry_delay : float
+        Initial delay between retries in seconds (default: 5.0).
+        Uses exponential backoff: delay * 2^attempt.
     userdata : str
         Custom script to run before runner setup.
     """
 
     api_key: str
-    instance_type: str
-    region: str
-    repo: str
+    instance_types: list[str] = field(default_factory=list)
+    regions: list[str] = field(default_factory=list)
+    repo: str = ""
     ssh_key_names: list[str] = field(default_factory=list)
     debug: str = ""
     gh_runner_tokens: list[str] = field(default_factory=list)
@@ -92,6 +113,8 @@ class StartLambdaLabs:
     runner_grace_period: str = "60"
     runner_initial_grace_period: str = "180"
     runner_poll_interval: str = "10"
+    retry_count: int = 1
+    retry_delay: float = 5.0
     runner_release: str = ""
     ssh_private_key: str = ""
     userdata: str = ""
@@ -101,19 +124,53 @@ class StartLambdaLabs:
         method: str,
         endpoint: str,
         json_data: dict = None,
+        raise_classified: bool = False,
     ) -> dict:
-        """Make an authenticated request to the Lambda Labs API."""
+        """Make an authenticated request to the Lambda Labs API.
+
+        Parameters
+        ----------
+        method : str
+            HTTP method (GET, POST, etc.).
+        endpoint : str
+            API endpoint path.
+        json_data : dict, optional
+            JSON body for the request.
+        raise_classified : bool
+            If True, classify API errors and raise appropriate exceptions
+            (CapacityError, RateLimitError, etc.) instead of generic HTTPError.
+
+        Returns
+        -------
+        dict
+            JSON response from the API.
+
+        Raises
+        ------
+        CapacityError
+            If the request failed due to insufficient capacity (when raise_classified=True).
+        RateLimitError
+            If the request was rate limited (when raise_classified=True).
+        ConfigurationError
+            If the request failed due to invalid configuration (when raise_classified=True).
+        requests.HTTPError
+            If the request failed and raise_classified=False.
+        """
         url = f"{LAMBDA_API_BASE}{endpoint}"
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         resp = requests.request(method, url, headers=headers, json=json_data)
         if not resp.ok:
-            # Log the actual error body before raising
             try:
                 error_body = resp.json()
                 print(f"Lambda API error: {error_body}")
-            except Exception:
+
+                if raise_classified:
+                    classified = classify_api_error(error_body)
+                    raise classified
+            except (ValueError, KeyError):
                 print(f"Lambda API error (raw): {resp.text}")
+
             resp.raise_for_status()
         return resp.json()
 
@@ -156,13 +213,86 @@ class StartLambdaLabs:
 
         return template_vars
 
+    def _launch_single_instance(
+        self,
+        instance_type: str,
+        region: str,
+        instance_name: str,
+    ) -> str:
+        """Attempt to launch a single instance.
+
+        Parameters
+        ----------
+        instance_type : str
+            The instance type to launch.
+        region : str
+            The region to launch in.
+        instance_name : str
+            Name for the instance (visible in Lambda dashboard).
+
+        Returns
+        -------
+        str
+            The instance ID if successful.
+
+        Raises
+        ------
+        CapacityError
+            If launch failed due to insufficient capacity.
+        RateLimitError
+            If launch was rate limited.
+        ConfigurationError
+            If launch failed due to invalid configuration.
+        RuntimeError
+            If launch failed for other reasons.
+        """
+        payload = {
+            "instance_type_name": instance_type,
+            "region_name": region,
+            "ssh_key_names": self.ssh_key_names,
+            "quantity": 1,
+            "name": instance_name,
+        }
+
+        print(f"Launching Lambda instance: {instance_type} in {region}")
+        result = self._api_request(
+            "POST",
+            "/instance-operations/launch",
+            payload,
+            raise_classified=True,
+        )
+
+        if "data" not in result or "instance_ids" not in result["data"]:
+            raise RuntimeError(f"Unexpected API response: {result}")
+
+        instance_ids = result["data"]["instance_ids"]
+        if not instance_ids:
+            error_msg = result.get("error", {}).get("message", "Unknown error")
+            # Check if this looks like a capacity error
+            if "capacity" in error_msg.lower():
+                raise CapacityError(instance_type, region, error_msg)
+            raise RuntimeError(f"Failed to launch instance: {error_msg}")
+
+        return instance_ids[0]
+
     def create_instances(self) -> dict[str, dict]:
-        """Create instances on Lambda Labs.
+        """Create instances on Lambda Labs with fallback support.
+
+        Tries each instance type in order, and for each type tries each region.
+        On capacity failures, moves to the next option. Retries with exponential
+        backoff for rate limit errors.
 
         Returns
         -------
         dict[str, dict]
             Mapping of instance IDs to runner metadata (label, labels, env_vars, action_sha).
+
+        Raises
+        ------
+        AllCapacityExhaustedError
+            If all instance type/region combinations fail due to capacity.
+        ConfigurationError
+            If launch fails due to invalid configuration (non-retryable).
         """
         from lambda_gha.log_constants import (
             LOG_PREFIX_JOB_COMPLETED,
@@ -173,10 +303,10 @@ class StartLambdaLabs:
             raise ValueError("No GitHub runner tokens provided")
         if not self.runner_release:
             raise ValueError("No runner release provided")
-        if not self.instance_type:
-            raise ValueError("No instance type provided")
-        if not self.region:
-            raise ValueError("No region provided")
+        if not self.instance_types:
+            raise ValueError("No instance types provided")
+        if not self.regions:
+            raise ValueError("No regions provided")
         if not self.ssh_key_names:
             raise ValueError("No SSH key names provided")
 
@@ -187,6 +317,7 @@ class StartLambdaLabs:
         action_sha = resolve_ref_to_sha(action_ref)
 
         id_dict = {}
+        all_attempts: list[LaunchAttempt] = []
 
         for idx, token in enumerate(self.gh_runner_tokens):
             label = gh.GitHubInstance.generate_random_label()
@@ -198,28 +329,80 @@ class StartLambdaLabs:
             if len(self.gh_runner_tokens) > 1:
                 instance_name = f"{instance_name}-{idx}"
 
-            # Launch instance via Lambda API
-            payload = {
-                "instance_type_name": self.instance_type,
-                "region_name": self.region,
-                "ssh_key_names": self.ssh_key_names,
-                "quantity": 1,
-                "name": instance_name,
-            }
+            # Try each instance type, then each region, with retries
+            instance_id = None
+            successful_type = None
+            successful_region = None
+            token_attempts: list[LaunchAttempt] = []
 
-            print(f"Launching Lambda instance: {self.instance_type} in {self.region}")
-            result = self._api_request("POST", "/instance-operations/launch", payload)
+            for instance_type in self.instance_types:
+                if instance_id:
+                    break
 
-            if "data" not in result or "instance_ids" not in result["data"]:
-                raise RuntimeError(f"Unexpected API response: {result}")
+                for region in self.regions:
+                    if instance_id:
+                        break
 
-            instance_ids = result["data"]["instance_ids"]
-            if not instance_ids:
-                error_msg = result.get("error", {}).get("message", "Unknown error")
-                raise RuntimeError(f"Failed to launch instance: {error_msg}")
+                    for retry in range(self.retry_count):
+                        attempt = LaunchAttempt(
+                            instance_type=instance_type,
+                            region=region,
+                            attempt=retry + 1,
+                        )
 
-            instance_id = instance_ids[0]
-            print(f"Launched instance {instance_id}")
+                        try:
+                            instance_id = self._launch_single_instance(
+                                instance_type=instance_type,
+                                region=region,
+                                instance_name=instance_name,
+                            )
+                            attempt.success = True
+                            attempt.instance_id = instance_id
+                            token_attempts.append(attempt)
+                            successful_type = instance_type
+                            successful_region = region
+                            print(f"Launched instance {instance_id}")
+                            break
+
+                        except CapacityError as e:
+                            attempt.error = str(e)
+                            token_attempts.append(attempt)
+
+                            # Determine what we'll try next for the warning message
+                            next_option = self._get_next_option(
+                                instance_type, region, retry
+                            )
+                            emit_capacity_warning(instance_type, region, next_option)
+
+                            # Don't retry same type+region for capacity errors
+                            break
+
+                        except RateLimitError as e:
+                            attempt.error = str(e)
+                            token_attempts.append(attempt)
+
+                            if retry < self.retry_count - 1:
+                                delay = self.retry_delay * (2 ** retry)
+                                if e.retry_after:
+                                    delay = max(delay, e.retry_after)
+                                print(f"Rate limited, waiting {delay:.1f}s...")
+                                time.sleep(delay)
+                            else:
+                                # Move to next region after exhausting retries
+                                break
+
+                        except ConfigurationError as e:
+                            # Non-retryable - fail immediately
+                            attempt.error = str(e)
+                            token_attempts.append(attempt)
+                            all_attempts.extend(token_attempts)
+                            raise
+
+            all_attempts.extend(token_attempts)
+
+            if not instance_id:
+                # Failed to launch for this token
+                continue
 
             # Build env vars for SSH setup (will be set on instance)
             env_vars = {
@@ -246,9 +429,65 @@ class StartLambdaLabs:
                 "labels": labels,
                 "env_vars": env_vars,
                 "action_sha": action_sha,
+                "instance_type": successful_type,
+                "region": successful_region,
             }
 
+        # Write summary for all attempts
+        if id_dict:
+            # At least one instance launched successfully
+            first_id = list(id_dict.keys())[0]
+            summary = format_launch_summary(
+                all_attempts,
+                success=True,
+                instance_id=first_id,
+            )
+            write_summary(summary)
+        else:
+            # All launches failed
+            summary = format_launch_summary(all_attempts, success=False)
+            write_summary(summary)
+            emit_all_exhausted_error(all_attempts)
+            raise AllCapacityExhaustedError(all_attempts)
+
         return id_dict
+
+    def _get_next_option(
+        self,
+        current_type: str,
+        current_region: str,
+        current_retry: int,
+    ) -> str:
+        """Get a description of what will be tried next after a failure.
+
+        Parameters
+        ----------
+        current_type : str
+            The instance type that just failed.
+        current_region : str
+            The region that just failed.
+        current_retry : int
+            The retry number (0-indexed) that just failed.
+
+        Returns
+        -------
+        str
+            Description of the next option to try, or empty string if exhausted.
+        """
+        type_idx = self.instance_types.index(current_type)
+        region_idx = self.regions.index(current_region)
+
+        # Next region for this type?
+        if region_idx + 1 < len(self.regions):
+            next_region = self.regions[region_idx + 1]
+            return f"{current_type} in {next_region}"
+
+        # Next instance type?
+        if type_idx + 1 < len(self.instance_types):
+            next_type = self.instance_types[type_idx + 1]
+            return f"{next_type}"
+
+        return ""
 
     def wait_until_ready(self, ids: list[str], timeout: int = INSTANCE_POLL_TIMEOUT) -> dict[str, dict]:
         """Wait until instances are running and return their details.
