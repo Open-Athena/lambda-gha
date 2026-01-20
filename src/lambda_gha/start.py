@@ -461,7 +461,7 @@ class StartLambdaLabs:
 
         # Write env vars to a file on the instance (more reliable than sudo -E)
         env_file_content = "\n".join(f'export {k}="{v}"' for k, v in env_vars.items())
-        write_env_cmd = f"cat > /tmp/lambda-gha-scripts/env.sh << 'ENVEOF'\n{env_file_content}\nENVOF"
+        write_env_cmd = f"cat > /tmp/lambda-gha-scripts/env.sh << 'ENVEOF'\n{env_file_content}\nENVEOF"
 
         print(f"Writing environment file to instance...")
         env_result = subprocess.run(
