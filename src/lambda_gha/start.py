@@ -497,9 +497,15 @@ class StartLambdaLabs:
                 # Failed to launch for this token
                 continue
 
-            # Build full labels including instance type and region
-            # Format: lambda,<instance_type>,<region>,GPU,<user_labels>,<random_label>
+            # Build full labels including instance type, region, and run info
+            # Format: lambda,<instance_type>,<region>,GPU,run-N,<repo>,<user_labels>,<random_label>
+            run_num = template_vars.get("run", "")
+            repo_name = template_vars.get("repo", "")
             auto_labels = ["lambda", successful_type, successful_region, "GPU"]
+            if run_num:
+                auto_labels.append(f"run-{run_num}")
+            if repo_name:
+                auto_labels.append(repo_name)
             if self.labels:
                 all_labels = auto_labels + [self.labels] + [label]
             else:
