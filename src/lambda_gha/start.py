@@ -497,6 +497,15 @@ class StartLambdaLabs:
                 # Failed to launch for this token
                 continue
 
+            # Build full labels including instance type and region
+            # Format: lambda,<instance_type>,<region>,GPU,<user_labels>,<random_label>
+            auto_labels = ["lambda", successful_type, successful_region, "GPU"]
+            if self.labels:
+                all_labels = auto_labels + [self.labels] + [label]
+            else:
+                all_labels = auto_labels + [label]
+            full_labels = ",".join(all_labels)
+
             # Build env vars for SSH setup (will be set on instance)
             env_vars = {
                 "action_sha": action_sha,
@@ -509,7 +518,7 @@ class StartLambdaLabs:
                 "repo": self.repo,
                 "runner_grace_period": self.runner_grace_period,
                 "runner_initial_grace_period": self.runner_initial_grace_period,
-                "runner_labels": labels,
+                "runner_labels": full_labels,
                 "runner_poll_interval": self.runner_poll_interval,
                 "runner_registration_timeout": environ.get("INPUT_RUNNER_REGISTRATION_TIMEOUT", "").strip() or RUNNER_REGISTRATION_TIMEOUT,
                 "runner_release": self.runner_release,
@@ -519,7 +528,7 @@ class StartLambdaLabs:
 
             id_dict[instance_id] = {
                 "label": label,
-                "labels": labels,
+                "labels": full_labels,
                 "env_vars": env_vars,
                 "action_sha": action_sha,
                 "instance_type": successful_type,
